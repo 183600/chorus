@@ -1,0 +1,32 @@
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+api_base = "http://127.0.0.1:18080"
+api_key = "sk-TEST-IFLOW-KEY"
+name = "glm-4.6"
+# temperature = 1.4  # 可选：设置温度值（0.0-2.0），不设置则使用模型默认值
+# auto_temperature = false  # 可选：是否由大模型自动选择温度，默认 false
+
+[workflow-integration]
+analyzer_model = "glm-4.6"
+worker_models = ["glm-4.6"]
+synthesizer_model = "glm-4.6"
+
+# 旧配置（兼容）
+[workflow.timeouts]
+analyzer_timeout_secs = 30000
+worker_timeout_secs = 60000
+synthesizer_timeout_secs = 60000
+
+# 新配置：域名覆盖
+[workflow.domains]
+
+[workflow.domains."api.example.com"]
+analyzer_timeout_secs = 40000
+worker_timeout_secs = 80000
+
+[workflow.domains."app.example.com"]
+analyzer_timeout_secs = 20000
+synthesizer_timeout_secs = 30000
