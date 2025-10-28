@@ -192,42 +192,63 @@ Chorus 支持三种 temperature 配置方式：
 
 **示例配置**：查看 `config-example.toml` 了解更多配置示例。
 
-### 工作流配置（支持域名超时覆盖）
+### 工作流配置（支持嵌套节点与域名超时覆盖）
 
 ```toml
-[workflow-integration]
-analyzer_model = "glm-4.6"        # 步骤1：分析器模型
-worker_models = [                  # 步骤2：工作模型列表
-    "qwen3-max",
-    "qwen3-vl-plus",
-    # ...
-]
-synthesizer_model = "glm-4.6"     # 步骤3：综合器模型
+[workflow-integration.analyzer]
+ref = "glm-4.6"        # 步骤1：分析器节点
+auto_temperature = true
 
-# 旧配置（兼容）：全局超时
+[[workflow-integration.workers]]
+ref = "qwen3-max"      # 简单的工作节点
+temperature = 0.8       # 节点级别的 temperature 覆盖
+
+[[workflow-integration.workers]]
+ref = "deepseek-v3.2"
+
+# 可选：嵌套一个子工作流（递归结构）
+[[workflow-integration.workers]]
+[workflow-integration.workers.analyzer]
+ref = "glm-4.6"
+auto_temperature = true
+
+[[workflow-integration.workers.workers]]
+ref = "kimi-k2-0905"
+temperature = 0.5
+
+[[workflow-integration.workers.workers]]
+ref = "glm-4.6"
+
+[workflow-integration.workers.synthesizer]
+ref = "glm-4.6"
+
+[workflow-integration.synthesizer]
+ref = "glm-4.6"        # 步骤3：综合器节点
+
+# 全局超时（必填）
 [workflow.timeouts]
-analyzer_timeout_secs = 30         # 分析器默认超时
-worker_timeout_secs = 60           # 工作者默认超时
-synthesizer_timeout_secs = 60      # 综合器默认超时
+analyzer_timeout_secs = 30         # 分析器默认超时（秒）
+worker_timeout_secs = 60           # 工作者默认超时（秒）
+synthesizer_timeout_secs = 60      # 综合器默认超时（秒）
 
-# 新配置：按域名覆盖（可选）
-# 通过模型的 api_base URL 域名匹配覆盖部分或全部超时字段
+# 域名覆盖：根据模型 api_base 的域名进行部分或全部覆盖
 [workflow.domains]
 [workflow.domains."api.example.com"]
-# 仅覆盖提供的字段，其他回落至全局 timeouts
 analyzer_timeout_secs = 40
 worker_timeout_secs = 80
 
 [workflow.domains."app.example.com"]
-# 支持部分覆盖
 analyzer_timeout_secs = 20
 synthesizer_timeout_secs = 30
 ```
 
-生效规则：
-- 从模型配置的 api_base 提取域名（例如 https://api.example.com/v1 → api.example.com）。
-- 若存在对应域名覆盖，仅替换提供的字段；未提供的字段回落到 [workflow.timeouts]。
-- 若无覆盖项或域名无法解析，则使用全局 [workflow.timeouts]。
+说明：
+- `ref` 字段引用上方 `[[model]]` 中声明的模型名称。
+- `temperature` / `auto_temperature` 可以在节点级别覆盖模型默认值；未设置时回落到模型配置或分析器产出的温度。
+- `workers` 数组支持混合：可以是简单的模型引用，也可以是包含 `analyzer` / `workers` / `synthesizer` 的子工作流，实现递归组合。
+- 超时规则保持不变：先使用 `[workflow.timeouts]` 的全局默认值，再按域名覆盖缺省字段。
+
+> 升级提示：若检测到旧版的 `workflow-integration`（含 `analyzer_model` / `worker_models` / `synthesizer_model` 字段），Chorus 会自动迁移到新格式，并在同目录生成 `config.toml.bak` 备份文件。
 
 ## 📚 API 文档
 

@@ -59,7 +59,7 @@ fn main() -> anyhow::Result<()> {
         .filter(|e| {
             e.file_name()
                 .to_string_lossy()
-                .starts_with("config.toml.backup.")
+                .starts_with("config.toml.bak")
         })
         .collect();
 
@@ -76,8 +76,8 @@ fn main() -> anyhow::Result<()> {
 
     // 检查新配置内容
     let new_content = fs::read_to_string(&old_config_path)?;
-    if new_content.contains("temperature") {
-        println!("✓ 新配置包含 temperature 配置");
+    if new_content.contains("[workflow-integration.analyzer]") {
+        println!("✓ 新配置已迁移到 analyzer/workers/synthesizer 格式");
         println!();
         println!("新配置文件内容（前30行）:");
         println!("---");
@@ -89,7 +89,7 @@ fn main() -> anyhow::Result<()> {
             println!("{}", line);
         }
     } else {
-        println!("✗ 新配置不包含 temperature 配置");
+        println!("✗ 新配置未检测到新的 workflow 格式");
     }
 
     println!();
@@ -97,8 +97,18 @@ fn main() -> anyhow::Result<()> {
     println!();
     println!("配置信息:");
     println!("  - 模型数量: {}", config.models.len());
-    println!("  - 分析器模型: {}", config.workflow_integration.analyzer_model);
-    println!("  - 工作模型数量: {}", config.workflow_integration.worker_models.len());
+    println!(
+        "  - 分析器模型: {}",
+        config.workflow_integration.analyzer.model
+    );
+    println!(
+        "  - 工作节点数量: {}",
+        config.workflow_integration.workers.len()
+    );
+    println!(
+        "  - 综合器模型: {}",
+        config.workflow_integration.synthesizer.model
+    );
 
     Ok(())
 }
