@@ -46,26 +46,26 @@ echo "5. 测试配置加载和迁移..."
 echo ""
 
 # 检查是否生成了备份文件
-BACKUP_FILES=$(ls -1 "$TEST_DIR/.config/chorus/"config.toml.backup.* 2>/dev/null | wc -l)
+BACKUP_FILES=$(ls -1 "$TEST_DIR/.config/chorus/"config.toml.bak* 2>/dev/null | wc -l)
 if [ "$BACKUP_FILES" -gt 0 ]; then
     echo "✓ 备份文件已创建:"
-    ls -lh "$TEST_DIR/.config/chorus/"config.toml.backup.*
+    ls -lh "$TEST_DIR/.config/chorus/"config.toml.bak*
     echo ""
 else
     echo "✗ 未找到备份文件"
     echo ""
 fi
 
-# 检查新配置文件是否包含 temperature 注释
-if grep -q "temperature" "$TEST_DIR/.config/chorus/config.toml"; then
-    echo "✓ 新配置文件包含 temperature 配置"
+# 检查新配置文件是否迁移到新的 workflow 格式
+if grep -q "\[workflow-integration.analyzer\]" "$TEST_DIR/.config/chorus/config.toml"; then
+    echo "✓ 新配置文件已迁移到 analyzer/workers/synthesizer 格式"
     echo ""
     echo "6. 新配置文件内容（前30行）:"
     echo "---"
     head -30 "$TEST_DIR/.config/chorus/config.toml"
     echo "..."
 else
-    echo "✗ 新配置文件不包含 temperature 配置"
+    echo "✗ 新配置文件未检测到新的 workflow 格式"
     echo ""
     echo "当前配置文件内容:"
     cat "$TEST_DIR/.config/chorus/config.toml"

@@ -30,9 +30,9 @@
 - **说明**：是否让分析器模型自动决定最佳 temperature
 
 **工作原理**：
-- 当设置为 `true` 时，分析器模型（analyzer_model）会分析用户的提示词
+- 当设置为 `true` 时，分析器节点（`workflow-integration.analyzer`）会分析用户的提示词
 - 根据问题类型（创意性、事实性、技术性等）推荐合适的 temperature
-- 推荐的 temperature 会应用到所有工作模型（worker_models）
+- 推荐的 temperature 会应用到所有工作节点（`workflow-integration.workers`）
 
 ## 配置示例
 
@@ -114,15 +114,15 @@ name = "deepseek-v3.2"
 ```
 用户提示
     ↓
-分析器模型（analyzer_model）
+分析器节点（workflow-integration.analyzer）
     ↓
 分析问题类型并推荐 temperature
     ↓
-应用到所有工作模型（worker_models）
+应用到所有工作节点（workflow-integration.workers）
     ↓
 生成响应
     ↓
-综合器模型（synthesizer_model）
+综合器节点（workflow-integration.synthesizer）
     ↓
 最终答案
 ```
@@ -229,12 +229,12 @@ A: 使用 `auto_temperature = true`，让分析器根据问题类型自动选择
 
 A: 可以。每个模型配置块都可以独立设置 `temperature` 或 `auto_temperature`。
 
-### Q3: temperature 设置对哪些模型生效？
+### Q3: temperature 设置对哪些节点生效？
 
 A: 
-- analyzer_model：使用固定的 0.3（用于分析）
-- worker_models：使用各自配置的 temperature
-- synthesizer_model：使用配置的 temperature 或默认 1.4
+- 分析器节点：使用节点或模型上配置的 temperature/auto_temperature（用于分析阶段）
+- 工作节点：每个 `workers` 条目可以拥有自己的温度设置，未设置时继承模型或分析器推荐的温度
+- 综合器节点：使用节点或模型上的 temperature，未设置时使用默认值 1.4
 
 ### Q4: 如果我想让所有模型都使用相同的 temperature，怎么办？
 

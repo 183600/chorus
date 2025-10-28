@@ -25,11 +25,18 @@ async fn main() -> Result<()> {
     let config = config::Config::load_auto()?;
     let host = config.server.host.clone();
     let port = config.server.port;
+    let worker_labels = config.workflow_integration.worker_labels();
 
     tracing::info!("Starting Chorus server on {}:{}", host, port);
-    tracing::info!("Analyzer model: {}", config.workflow_integration.analyzer_model);
-    tracing::info!("Worker models: {:?}", config.workflow_integration.worker_models);
-    tracing::info!("Synthesizer model: {}", config.workflow_integration.synthesizer_model);
+    tracing::info!(
+        "Analyzer model: {}",
+        config.workflow_integration.analyzer.model
+    );
+    tracing::info!("Worker nodes: {:?}", worker_labels);
+    tracing::info!(
+        "Synthesizer model: {}",
+        config.workflow_integration.synthesizer.model
+    );
 
     // 启动服务器
     server::start_server(Arc::new(config)).await?;
