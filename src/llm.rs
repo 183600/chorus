@@ -191,31 +191,88 @@ impl LLMClient {
 }
 
 pub fn parse_temperature_from_response(response: &str) -> f32 {
-    // 尝试从响应中提取temperature值
-    // 查找JSON格式的temperature
-    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(response) {
-        if let Some(temp) = json_value.get("temperature") {
-            if let Some(temp_f64) = temp.as_f64() {
-                return temp_f64 as f32;
-            }
-        }
+    if let Some(value) = parse_temperature_from_json(response) {
+        return clamp_temperature(value);
     }
 
-    // 尝试查找文本中的temperature值
-    let lines = response.lines();
-    for line in lines {
+    for line in response.lines() {
         if line.to_lowercase().contains("temperature") {
-            // 尝试提取数字
-            let parts: Vec<&str> = line.split(':').collect();
-            if parts.len() >= 2 {
-                let value_part = parts[1].trim();
-                if let Ok(temp) = value_part.parse::<f32>() {
-                    return temp.max(0.0).min(2.0);
+            if let Some(value_part) = line.splitn(2, ':').nth(1) {
+                if let Some(value) = parse_numeric_fragment(value_part) {
+                    return clamp_temperature(value);
                 }
             }
+
+            if let Some(value) = parse_numeric_fragment(line) {
+                return clamp_temperature(value);
+            }
         }
     }
 
-    // 默认返回1.4
     1.4
+}
+
+fn parse_temperature_from_json(response: &str) -> Option<f32> {
+    let json_value = serde_json::from_str::<serde_json::Value>(response).ok()?;
+    extract_temperature_from_json(&json_value)
+}
+
+fn extract_temperature_from_json(value: &serde_json::Value) -> Option<f32> {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(temp_value) = map.get("temperature") {
+                return match temp_value {
+                    serde_json::Value::Number(n) => n.as_f64().map(|v| v as f32),
+                    serde_json::Value::String(s) => parse_numeric_fragment(s),
+                    _ => None,
+                };
+            }
+
+            map.values().find_map(extract_temperature_from_json)
+        }
+        serde_json::Value::Array(items) => items.iter().find_map(extract_temperature_from_json),
+        _ => None,
+    }
+}
+
+fn parse_numeric_fragment(input: &str) -> Option<f32> {
+    let trimmed = input.trim().trim_matches(|c| c == '"' || c == '\'');
+    if let Ok(value) = trimmed.parse::<f32>() {
+        return Some(value);
+    }
+
+    trimmed
+        .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+        .find(|segment| !segment.is_empty())
+        .and_then(|segment| segment.parse::<f32>().ok())
+}
+
+fn clamp_temperature(value: f32) -> f32 {
+    value.clamp(0.0, 2.0)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_temperature_from_json_string_value() {
+        let response = r#"{"temperature":"0.65","reasoning":"ok"}"#;
+        let value = parse_temperature_from_response(response);
+        assert!((value - 0.65).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parses_temperature_from_text_fragment() {
+        let response = "Temperature: \"0.42\", reasoning: details";
+        let value = parse_temperature_from_response(response);
+        assert!((value - 0.42).abs() < 1e-6);
+    }
+
+    #[test]
+    fn clamps_out_of_range_values() {
+        let response = r#"{"temperature": 3.5}"#;
+        assert_eq!(parse_temperature_from_response(response), 2.0);
+    }
 }
