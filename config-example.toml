@@ -41,11 +41,11 @@ auto_temperature = true
 
 # 工作节点支持为每个模型单独设置 temperature
 [[workflow-integration.workers]]
-ref = "qwen3-max"
+name = "qwen3-max"
 temperature = 0.8
 
 [[workflow-integration.workers]]
-ref = "deepseek-v3.2"
+name = "deepseek-v3.2"
 
 # 工作节点还可以嵌套子工作流（递归结构）
 [[workflow-integration.workers]]
@@ -54,11 +54,11 @@ ref = "glm-4.6"
 auto_temperature = true
 
 [[workflow-integration.workers.workers]]
-ref = "kimi-k2-0905"
+name = "kimi-k2-0905"
 temperature = 0.5
 
 [[workflow-integration.workers.workers]]
-ref = "glm-4.6"
+name = "glm-4.6"
 auto_temperature = true
 
 [workflow-integration.workers.synthesizer]

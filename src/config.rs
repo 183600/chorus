@@ -5,6 +5,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use toml::Value;
 
 const DEFAULT_CONFIG: &str = r#"# Chorus 默认配置
 [server]
@@ -59,31 +60,31 @@ ref = "glm-4.6"
 auto_temperature = true
 
 [[workflow-integration.workers]]
-ref = "qwen3-max"
+name = "qwen3-max"
 temperature = 0.4
 
 [[workflow-integration.workers]]
-ref = "qwen3-vl-plus"
+name = "qwen3-vl-plus"
 temperature = 0.4
 
 [[workflow-integration.workers]]
-ref = "kimi-k2-0905"
+name = "kimi-k2-0905"
 temperature = 0.4
 
 [[workflow-integration.workers]]
-ref = "glm-4.6"
+name = "glm-4.6"
 temperature = 0.4
 
 [[workflow-integration.workers]]
-ref = "deepseek-v3.2"
+name = "deepseek-v3.2"
 temperature = 0.4
 
 [[workflow-integration.workers]]
-ref = "deepseek-v3.1"
+name = "deepseek-v3.1"
 temperature = 0.4
 
 [[workflow-integration.workers]]
-ref = "deepseek-r1"
+name = "deepseek-r1"
 temperature = 0.4
 
 [workflow-integration.synthesizer]
@@ -268,32 +269,173 @@ impl Config {
         let content = fs::read_to_string(config_path)
             .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
 
-        let parsed: toml::Value = match toml::from_str(&content) {
+        let mut value: Value = match toml::from_str(&content) {
             Ok(value) => value,
             Err(_) => return Ok(()),
         };
 
-        let needs_migration = parsed
-            .get("workflow-integration")
-            .and_then(|node| node.get("analyzer_model"))
-            .is_some()
-            || parsed
-                .get("workflow-integration")
-                .and_then(|node| node.get("worker_models"))
-                .is_some()
-            || parsed
-                .get("workflow-integration")
-                .and_then(|node| node.get("synthesizer_model"))
-                .is_some();
+        let mut migrations: Vec<&str> = Vec::new();
 
-        if !needs_migration {
+        let legacy_detected = value
+            .get("workflow-integration")
+            .and_then(Value::as_table)
+            .map(|table| {
+                table.contains_key("analyzer_model")
+                    || table.contains_key("worker_models")
+                    || table.contains_key("synthesizer_model")
+            })
+            .unwrap_or(false);
+
+        if legacy_detected {
+            tracing::info!(
+                "Detected legacy workflow-integration format, migrating to analyzer/workers/synthesizer map"
+            );
+
+            #[derive(Deserialize)]
+            struct LegacyWorkflowIntegration {
+                analyzer_model: String,
+                worker_models: Vec<String>,
+                synthesizer_model: String,
+            }
+
+            #[derive(Deserialize)]
+            struct LegacyConfig {
+                server: ServerConfig,
+                #[serde(rename = "model", deserialize_with = "deserialize_models")]
+                models: Vec<ModelConfig>,
+                #[serde(rename = "workflow-integration")]
+                workflow_integration: LegacyWorkflowIntegration,
+                workflow: WorkflowConfig,
+            }
+
+            let legacy: LegacyConfig = toml::from_str(&content)
+                .with_context(|| "Failed to parse legacy config format")?;
+
+            let plan = WorkflowPlan {
+                analyzer: WorkflowModelTarget {
+                    model: legacy.workflow_integration.analyzer_model,
+                    temperature: None,
+                    auto_temperature: None,
+                },
+                workers: legacy
+                    .workflow_integration
+                    .worker_models
+                    .into_iter()
+                    .map(|model| {
+                        WorkflowWorker::Model(WorkflowModelTarget {
+                            model,
+                            temperature: None,
+                            auto_temperature: None,
+                        })
+                    })
+                    .collect(),
+                synthesizer: WorkflowModelTarget {
+                    model: legacy.workflow_integration.synthesizer_model,
+                    temperature: None,
+                    auto_temperature: None,
+                },
+            };
+
+            let new_config = Config {
+                server: legacy.server,
+                models: legacy.models,
+                workflow_integration: plan,
+                workflow: legacy.workflow,
+            };
+
+            value = toml::from_str(
+                &toml::to_string_pretty(&new_config)
+                    .with_context(|| "Failed to serialize migrated config")?,
+            )
+            .with_context(|| "Failed to parse migrated config back into value")?;
+
+            migrations.push("workflow 节点结构");
+        }
+
+        if Self::migrate_worker_name_fields(&mut value) {
+            tracing::info!(
+                "Detected workflow workers using `ref`, migrating them to the new `name` field"
+            );
+            migrations.push("workers.name 字段");
+        }
+
+        if migrations.is_empty() {
             return Ok(());
         }
 
-        tracing::info!(
-            "Detected legacy workflow-integration format, migrating to analyzer/workers/synthesizer map"
+        let backup_path = Self::backup_config_file(config_path)?;
+        tracing::info!("Old config backed up to: {}", backup_path.display());
+
+        let mut new_content = String::new();
+        new_content.push_str(&format!(
+            "# Chorus 配置文件（已自动迁移：{}）\n",
+            migrations.join("，")
+        ));
+        new_content.push_str(&format!("# 旧配置已备份到: {}\n\n", backup_path.display()));
+        new_content.push_str(
+            &toml::to_string_pretty(&value)
+                .with_context(|| "Failed to serialize migrated config")?,
         );
 
+        fs::write(config_path, new_content)
+            .with_context(|| format!("Failed to write migrated config to {}", config_path.display()))?;
+
+        tracing::info!(
+            "Config migration completed successfully: {}",
+            migrations.join(", ")
+        );
+        tracing::info!("New config written to: {}", config_path.display());
+
+        Ok(())
+    }
+
+    fn migrate_worker_name_fields(value: &mut Value) -> bool {
+        if let Value::Table(table) = value {
+            if let Some(workflow) = table.get_mut("workflow-integration") {
+                return Self::migrate_worker_name_fields_in_plan(workflow);
+            }
+        }
+        false
+    }
+
+    fn migrate_worker_name_fields_in_plan(plan: &mut Value) -> bool {
+        if let Value::Table(map) = plan {
+            let mut changed = false;
+            if let Some(workers) = map.get_mut("workers") {
+                if let Value::Array(array) = workers {
+                    for worker in array {
+                        if Self::migrate_worker_name_fields_in_worker(worker) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            changed
+        } else {
+            false
+        }
+    }
+
+    fn migrate_worker_name_fields_in_worker(worker: &mut Value) -> bool {
+        if let Value::Table(table) = worker {
+            if table.contains_key("analyzer")
+                || table.contains_key("workers")
+                || table.contains_key("synthesizer")
+            {
+                return Self::migrate_worker_name_fields_in_plan(worker);
+            }
+
+            if table.contains_key("ref") && !table.contains_key("name") {
+                if let Some(value) = table.remove("ref") {
+                    table.insert("name".to_string(), value);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn backup_config_file(config_path: &Path) -> Result<PathBuf> {
         let mut backup_path = config_path.with_extension("toml.bak");
         if backup_path.exists() {
             let timestamp = SystemTime::now()
@@ -306,73 +448,7 @@ impl Config {
         fs::copy(config_path, &backup_path)
             .with_context(|| format!("Failed to backup config to {}", backup_path.display()))?;
 
-        tracing::info!("Old config backed up to: {}", backup_path.display());
-
-        #[derive(Deserialize)]
-        struct LegacyWorkflowIntegration {
-            analyzer_model: String,
-            worker_models: Vec<String>,
-            synthesizer_model: String,
-        }
-
-        #[derive(Deserialize)]
-        struct LegacyConfig {
-            server: ServerConfig,
-            #[serde(rename = "model", deserialize_with = "deserialize_models")]
-            models: Vec<ModelConfig>,
-            #[serde(rename = "workflow-integration")]
-            workflow_integration: LegacyWorkflowIntegration,
-            workflow: WorkflowConfig,
-        }
-
-        let legacy: LegacyConfig = toml::from_str(&content)
-            .with_context(|| "Failed to parse legacy config format")?;
-
-        let plan = WorkflowPlan {
-            analyzer: WorkflowModelTarget {
-                model: legacy.workflow_integration.analyzer_model,
-                temperature: None,
-                auto_temperature: None,
-            },
-            workers: legacy
-                .workflow_integration
-                .worker_models
-                .into_iter()
-                .map(|model| {
-                    WorkflowWorker::Model(WorkflowModelTarget {
-                        model,
-                        temperature: None,
-                        auto_temperature: None,
-                    })
-                })
-                .collect(),
-            synthesizer: WorkflowModelTarget {
-                model: legacy.workflow_integration.synthesizer_model,
-                temperature: None,
-                auto_temperature: None,
-            },
-        };
-
-        let new_config = Config {
-            server: legacy.server,
-            models: legacy.models,
-            workflow_integration: plan,
-            workflow: legacy.workflow,
-        };
-
-        let mut new_content = String::new();
-        new_content.push_str("# Chorus 配置文件（已自动迁移到新的 workflow 格式）\n");
-        new_content.push_str(&format!("# 旧配置已备份到: {}\n\n", backup_path.display()));
-        new_content.push_str(&toml::to_string_pretty(&new_config)
-            .with_context(|| "Failed to serialize migrated config")?);
-
-        fs::write(config_path, new_content)
-            .with_context(|| format!("Failed to write migrated config to {}", config_path.display()))?;
-
-        tracing::info!("Config migration completed successfully!");
-        tracing::info!("New config written to: {}", config_path.display());
-
-        Ok(())
+        Ok(backup_path)
     }
 
     pub fn load_from_user_config() -> Result<Self> {
