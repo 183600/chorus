@@ -14,7 +14,7 @@ ref = "glm-4.6"
 auto_temperature = true
 
 [[workflow-integration.workers]]
-ref = "glm-4.6"
+name = "glm-4.6"
 
 [workflow-integration.synthesizer]
 ref = "glm-4.6"

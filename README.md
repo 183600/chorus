@@ -200,11 +200,11 @@ ref = "glm-4.6"        # 步骤1：分析器节点
 auto_temperature = true
 
 [[workflow-integration.workers]]
-ref = "qwen3-max"      # 简单的工作节点
+name = "qwen3-max"      # 简单的工作节点
 temperature = 0.8       # 节点级别的 temperature 覆盖
 
 [[workflow-integration.workers]]
-ref = "deepseek-v3.2"
+name = "deepseek-v3.2"
 
 # 可选：嵌套一个子工作流（递归结构）
 [[workflow-integration.workers]]
@@ -213,11 +213,11 @@ ref = "glm-4.6"
 auto_temperature = true
 
 [[workflow-integration.workers.workers]]
-ref = "kimi-k2-0905"
+name = "kimi-k2-0905"
 temperature = 0.5
 
 [[workflow-integration.workers.workers]]
-ref = "glm-4.6"
+name = "glm-4.6"
 
 [workflow-integration.workers.synthesizer]
 ref = "glm-4.6"
@@ -243,12 +243,12 @@ synthesizer_timeout_secs = 30
 ```
 
 说明：
-- `ref` 字段引用上方 `[[model]]` 中声明的模型名称。
+- 分析器与综合器节点通过 `ref` 字段引用上方 `[[model]]` 中声明的模型名称；直接执行的工作节点使用 `name` 字段引用模型（旧格式的 `ref` 会在启动时自动迁移）。
 - `temperature` / `auto_temperature` 可以在节点级别覆盖模型默认值；未设置时回落到模型配置或分析器产出的温度。
 - `workers` 数组支持混合：可以是简单的模型引用，也可以是包含 `analyzer` / `workers` / `synthesizer` 的子工作流，实现递归组合。
 - 超时规则保持不变：先使用 `[workflow.timeouts]` 的全局默认值，再按域名覆盖缺省字段。
 
-> 升级提示：若检测到旧版的 `workflow-integration`（含 `analyzer_model` / `worker_models` / `synthesizer_model` 字段），Chorus 会自动迁移到新格式，并在同目录生成 `config.toml.bak` 备份文件。
+> 升级提示：若检测到旧版的 `workflow-integration`（含 `analyzer_model` / `worker_models` / `synthesizer_model` 字段，或 `workers` 节点仍使用 `ref` 字段），Chorus 会自动迁移到新格式，并在同目录生成 `config.toml.bak` 备份文件。
 
 ## 📚 API 文档
 

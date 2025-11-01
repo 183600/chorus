@@ -17,7 +17,7 @@ name = "m1"
 ref = "m1"
 
 [[workflow-integration.workers]]
-ref = "m1"
+name = "m1"
 
 [workflow-integration.synthesizer]
 ref = "m1"
@@ -42,7 +42,7 @@ name = "m1"
 ref = "m1"
 
 [[workflow-integration.workers]]
-ref = "m1"
+name = "m1"
 
 [workflow-integration.synthesizer]
 ref = "m1"
@@ -72,7 +72,7 @@ name = "m1"
 ref = "m1"
 
 [[workflow-integration.workers]]
-ref = "m1"
+name = "m1"
 
 [workflow-integration.synthesizer]
 ref = "m1"
