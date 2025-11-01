@@ -13,14 +13,20 @@ api_base = "https://api.example.com/v1"
 api_key = "k"
 name = "m1"
 
-[workflow-integration.analyzer]
-ref = "m1"
-
-[[workflow-integration.workers]]
-name = "m1"
-
-[workflow-integration.synthesizer]
-ref = "m1"
+[workflow-integration]
+json = """{
+  "analyzer": {
+    "ref": "m1"
+  },
+  "workers": [
+    {
+      "name": "m1"
+    }
+  ],
+  "synthesizer": {
+    "ref": "m1"
+  }
+}"""
 
 [workflow.timeouts]
 analyzer_timeout_secs = 3
@@ -38,14 +44,20 @@ api_base = "https://api.example.com/v1"
 api_key = "k"
 name = "m1"
 
-[workflow-integration.analyzer]
-ref = "m1"
-
-[[workflow-integration.workers]]
-name = "m1"
-
-[workflow-integration.synthesizer]
-ref = "m1"
+[workflow-integration]
+json = """{
+  "analyzer": {
+    "ref": "m1"
+  },
+  "workers": [
+    {
+      "name": "m1"
+    }
+  ],
+  "synthesizer": {
+    "ref": "m1"
+  }
+}"""
 
 [workflow.timeouts]
 analyzer_timeout_secs = 30
@@ -68,14 +80,20 @@ api_base = "https://app.example.com/v1"
 api_key = "k"
 name = "m1"
 
-[workflow-integration.analyzer]
-ref = "m1"
-
-[[workflow-integration.workers]]
-name = "m1"
-
-[workflow-integration.synthesizer]
-ref = "m1"
+[workflow-integration]
+json = """{
+  "analyzer": {
+    "ref": "m1"
+  },
+  "workers": [
+    {
+      "name": "m1"
+    }
+  ],
+  "synthesizer": {
+    "ref": "m1"
+  }
+}"""
 
 [workflow.timeouts]
 analyzer_timeout_secs = 100

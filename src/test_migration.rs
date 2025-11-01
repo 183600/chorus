@@ -76,8 +76,8 @@ fn main() -> anyhow::Result<()> {
 
     // 检查新配置内容
     let new_content = fs::read_to_string(&old_config_path)?;
-    if new_content.contains("[workflow-integration.analyzer]") {
-        println!("✓ 新配置已迁移到 analyzer/workers/synthesizer 格式");
+    if new_content.contains("[workflow-integration]") && new_content.contains("json = \"\"\"") {
+        println!("✓ 新配置已迁移到 workflow json 格式");
         println!();
         println!("新配置文件内容（前30行）:");
         println!("---");
@@ -89,7 +89,7 @@ fn main() -> anyhow::Result<()> {
             println!("{}", line);
         }
     } else {
-        println!("✗ 新配置未检测到新的 workflow 格式");
+        println!("✗ 新配置未检测到 workflow json 格式");
     }
 
     println!();

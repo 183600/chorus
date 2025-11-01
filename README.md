@@ -103,6 +103,27 @@ cd chorus
 api_base = "http://127.0.0.1:18080"
 api_key = "sk-TEST-IFLOW-KEY"
 name = "glm-4.6"
+
+[workflow-integration]
+json = """{
+  "analyzer": {
+    "ref": "glm-4.6",
+    "auto_temperature": true
+  },
+  "workers": [
+    {
+      "name": "glm-4.6"
+    }
+  ],
+  "synthesizer": {
+    "ref": "glm-4.6"
+  }
+}"""
+
+[workflow.timeouts]
+analyzer_timeout_secs = 30000
+worker_timeout_secs = 60000
+synthesizer_timeout_secs = 60000
 ```
 
 3. **编译项目**
@@ -195,35 +216,44 @@ Chorus 支持三种 temperature 配置方式：
 ### 工作流配置（支持嵌套节点与域名超时覆盖）
 
 ```toml
-[workflow-integration.analyzer]
-ref = "glm-4.6"        # 步骤1：分析器节点
-auto_temperature = true
-
-[[workflow-integration.workers]]
-name = "qwen3-max"      # 简单的工作节点
-temperature = 0.8       # 节点级别的 temperature 覆盖
-
-[[workflow-integration.workers]]
-name = "deepseek-v3.2"
-
-# 可选：嵌套一个子工作流（递归结构）
-[[workflow-integration.workers]]
-[workflow-integration.workers.analyzer]
-ref = "glm-4.6"
-auto_temperature = true
-
-[[workflow-integration.workers.workers]]
-name = "kimi-k2-0905"
-temperature = 0.5
-
-[[workflow-integration.workers.workers]]
-name = "glm-4.6"
-
-[workflow-integration.workers.synthesizer]
-ref = "glm-4.6"
-
-[workflow-integration.synthesizer]
-ref = "glm-4.6"        # 步骤3：综合器节点
+[workflow-integration]
+json = """{
+  "analyzer": {
+    "ref": "glm-4.6",
+    "auto_temperature": true
+  },
+  "workers": [
+    {
+      "name": "qwen3-max",
+      "temperature": 0.8
+    },
+    {
+      "name": "deepseek-v3.2"
+    },
+    {
+      "analyzer": {
+        "ref": "glm-4.6",
+        "auto_temperature": true
+      },
+      "workers": [
+        {
+          "name": "kimi-k2-0905",
+          "temperature": 0.5
+        },
+        {
+          "name": "glm-4.6",
+          "auto_temperature": true
+        }
+      ],
+      "synthesizer": {
+        "ref": "glm-4.6"
+      }
+    }
+  ],
+  "synthesizer": {
+    "ref": "glm-4.6"
+  }
+}"""
 
 # 全局超时（必填）
 [workflow.timeouts]
@@ -243,12 +273,13 @@ synthesizer_timeout_secs = 30
 ```
 
 说明：
-- 分析器与综合器节点通过 `ref` 字段引用上方 `[[model]]` 中声明的模型名称；直接执行的工作节点使用 `name` 字段引用模型（旧格式的 `ref` 会在启动时自动迁移）。
-- `temperature` / `auto_temperature` 可以在节点级别覆盖模型默认值；未设置时回落到模型配置或分析器产出的温度。
-- `workers` 数组支持混合：可以是简单的模型引用，也可以是包含 `analyzer` / `workers` / `synthesizer` 的子工作流，实现递归组合。
+- `[workflow-integration]` 节点现在通过 `json` 字段保存完整的工作流结构，推荐使用三引号 `"""` 包裹多行 JSON，保证可读性。
+- 分析器与综合器节点通过 `ref` 字段引用上方 `[[model]]` 中声明的模型名称；普通工作节点使用 `name` 字段引用模型。
+- `workers` 数组可以混合模型节点和子工作流：只要对象内包含 `analyzer` / `workers` / `synthesizer` 字段，就会被视为一个递归子工作流。
+- JSON 节点内的 `temperature` / `auto_temperature` 会优先于模型默认值；未设置时回落到模型配置或分析器产出的温度。
 - 超时规则保持不变：先使用 `[workflow.timeouts]` 的全局默认值，再按域名覆盖缺省字段。
 
-> 升级提示：若检测到旧版的 `workflow-integration`（含 `analyzer_model` / `worker_models` / `synthesizer_model` 字段，或 `workers` 节点仍使用 `ref` 字段），Chorus 会自动迁移到新格式，并在同目录生成 `config.toml.bak` 备份文件。
+> 升级提示：若检测到旧版的 `workflow-integration` 配置（如 analyzer/workers/synthesizer 表格，或包含 `analyzer_model` / `worker_models` / `synthesizer_model` 字段），Chorus 会自动迁移到 `[workflow-integration].json` 格式，并在同目录生成 `config.toml.bak` 备份文件。
 
 ## 📚 API 文档
 
