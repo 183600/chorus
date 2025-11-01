@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, TimeoutConfig};
+    use crate::config::{Config, TimeoutConfig, WorkflowWorker};
 
     const CFG_LEGACY: &str = r#"
 [server]
@@ -105,6 +105,155 @@ synthesizer_timeout_secs = 300
 analyzer_timeout_secs = 20
 synthesizer_timeout_secs = 30
 "#;
+
+    const CFG_NESTED: &str = r#"
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "k"
+name = "glm-4.6"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "k"
+name = "deepseek-r1"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "k"
+name = "deepseek-v3.2"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "k"
+name = "kimi-k2-0905"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "k"
+name = "deepseek-v3.1"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "k"
+name = "qwen3-coder"
+
+[workflow-integration]
+json = """{
+  "analyzer": {
+    "ref": "glm-4.6",
+    "auto_temperature": true
+  },
+  "workers": [
+    {
+      "name": "deepseek-r1",
+      "temperature": 0.4
+    },
+    {
+      "name": "deepseek-v3.2",
+      "temperature": 0.4
+    },
+    {
+      "analyzer": {
+        "ref": "glm-4.6",
+        "auto_temperature": true
+      },
+      "workers": [
+        {
+          "name": "kimi-k2-0905",
+          "temperature": 0.4
+        },
+        {
+          "name": "deepseek-v3.2",
+          "temperature": 0.4
+        },
+        {
+          "name": "glm-4.6",
+          "temperature": 0.4
+        },
+        {
+          "analyzer": {
+            "ref": "glm-4.6",
+            "auto_temperature": true
+          },
+          "workers": [
+            {
+              "name": "qwen3-coder",
+              "temperature": 0.4
+            },
+            {
+              "name": "deepseek-v3.1",
+              "temperature": 0.4
+            },
+            {
+              "name": "glm-4.6",
+              "temperature": 0.4
+            }
+          ],
+          "synthesizer": {
+            "ref": "glm-4.6"
+          }
+        }
+      ],
+      "synthesizer": {
+        "ref": "glm-4.6"
+      }
+    }
+  ],
+  "synthesizer": {
+    "ref": "glm-4.6"
+  }
+}"""
+
+[workflow.timeouts]
+analyzer_timeout_secs = 10
+worker_timeout_secs = 20
+synthesizer_timeout_secs = 30
+"#;
+
+    #[test]
+    fn nested_workflow_config_parses() {
+        let cfg: Config = toml::from_str(CFG_NESTED).unwrap();
+
+        assert_eq!(cfg.workflow_integration.analyzer.model, "glm-4.6");
+        assert_eq!(cfg.workflow_integration.workers.len(), 3);
+
+        let nested = match &cfg.workflow_integration.workers[2] {
+            WorkflowWorker::Workflow(plan) => plan.as_ref(),
+            other => panic!("expected nested workflow worker, got {:?}", other),
+        };
+
+        assert_eq!(nested.analyzer.model, "glm-4.6");
+        assert_eq!(nested.workers.len(), 4);
+        assert_eq!(nested.synthesizer.model, "glm-4.6");
+
+        let deeper = match &nested.workers[3] {
+            WorkflowWorker::Workflow(plan) => plan.as_ref(),
+            other => panic!("expected nested workflow worker, got {:?}", other),
+        };
+
+        assert_eq!(deeper.analyzer.model, "glm-4.6");
+        assert_eq!(deeper.workers.len(), 3);
+        assert_eq!(deeper.synthesizer.model, "glm-4.6");
+
+        let serialized = cfg
+            .workflow_integration
+            .to_json_string()
+            .expect("failed to serialize nested workflow");
+
+        let value = serde_json::from_str::<serde_json::Value>(&serialized).unwrap();
+
+        assert_eq!(
+            value["workers"][2]["workers"][3]["workers"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+    }
 
     #[test]
     fn legacy_timeouts_used_when_no_override() {
