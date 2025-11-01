@@ -1,5 +1,5 @@
 # Chorus 配置示例文件
-# 展示如何配置 temperature 参数以及新的 workflow 节点格式
+# 展示如何配置 temperature 参数以及新的 workflow JSON 格式
 
 [server]
 host = "127.0.0.1"
@@ -34,44 +34,61 @@ name = "kimi-k2-0905"
 temperature = 0.5  # 固定值优先，auto_temperature 会被忽略
 auto_temperature = true
 
-# Workflow 节点配置（analyzer / workers / synthesizer）
-[workflow-integration.analyzer]
-ref = "glm-4.6"
-auto_temperature = true
-
-# 工作节点支持为每个模型单独设置 temperature
-[[workflow-integration.workers]]
-name = "qwen3-max"
-temperature = 0.8
-
-[[workflow-integration.workers]]
-name = "deepseek-v3.2"
-
-# 工作节点还可以嵌套子工作流（递归结构）
-[[workflow-integration.workers]]
-[workflow-integration.workers.analyzer]
-ref = "glm-4.6"
-auto_temperature = true
-
-[[workflow-integration.workers.workers]]
-name = "kimi-k2-0905"
-temperature = 0.5
-
-[[workflow-integration.workers.workers]]
-name = "glm-4.6"
-auto_temperature = true
-
-[workflow-integration.workers.synthesizer]
-ref = "glm-4.6"
-
-# 综合阶段模型
-[workflow-integration.synthesizer]
-ref = "glm-4.6"
+# 新格式：将 workflow 结构存储为 JSON 字符串
+[workflow-integration]
+json = """{
+  "analyzer": {
+    "ref": "glm-4.6",
+    "auto_temperature": true
+  },
+  "workers": [
+    {
+      "name": "qwen3-max",
+      "temperature": 0.8
+    },
+    {
+      "name": "deepseek-v3.2"
+    },
+    {
+      "analyzer": {
+        "ref": "glm-4.6",
+        "auto_temperature": true
+      },
+      "workers": [
+        {
+          "name": "kimi-k2-0905",
+          "temperature": 0.5
+        },
+        {
+          "name": "glm-4.6",
+          "auto_temperature": true
+        }
+      ],
+      "synthesizer": {
+        "ref": "glm-4.6"
+      }
+    }
+  ],
+  "synthesizer": {
+    "ref": "glm-4.6",
+    "auto_temperature": true
+  }
+}"""
 
 [workflow.timeouts]
 analyzer_timeout_secs = 30000
 worker_timeout_secs = 60000
 synthesizer_timeout_secs = 60000
+
+# 域名超时覆盖示例
+[workflow.domains]
+[workflow.domains."api.example.com"]
+analyzer_timeout_secs = 40000
+worker_timeout_secs = 80000
+
+[workflow.domains."app.example.com"]
+analyzer_timeout_secs = 20000
+synthesizer_timeout_secs = 30000
 
 # Temperature 配置说明：
 # 

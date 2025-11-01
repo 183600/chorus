@@ -57,15 +57,16 @@ else
 fi
 
 # 检查新配置文件是否迁移到新的 workflow 格式
-if grep -q "\[workflow-integration.analyzer\]" "$TEST_DIR/.config/chorus/config.toml"; then
-    echo "✓ 新配置文件已迁移到 analyzer/workers/synthesizer 格式"
+if grep -q "\[workflow-integration\]" "$TEST_DIR/.config/chorus/config.toml" \
+   && grep -q "json = \"\"\"" "$TEST_DIR/.config/chorus/config.toml"; then
+    echo "✓ 新配置文件已迁移到 workflow json 格式"
     echo ""
     echo "6. 新配置文件内容（前30行）:"
     echo "---"
     head -30 "$TEST_DIR/.config/chorus/config.toml"
     echo "..."
 else
-    echo "✗ 新配置文件未检测到新的 workflow 格式"
+    echo "✗ 新配置文件未检测到 workflow json 格式"
     echo ""
     echo "当前配置文件内容:"
     cat "$TEST_DIR/.config/chorus/config.toml"

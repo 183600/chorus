@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{de::Deserializer, Deserialize, Serialize};
+use serde::de::Error as DeError;
+use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -32,63 +34,97 @@ api_base = "https://apis.iflow.cn/v1"
 api_key = "your-api-key-here"
 name = "glm-4.6"
 
-auto_temperature = true
-
 [[model]]
 api_base = "https://apis.iflow.cn/v1"
 api_key = "your-api-key-here"
 name = "deepseek-v3.2"
-
-auto_temperature = true
 
 [[model]]
 api_base = "https://apis.iflow.cn/v1"
 api_key = "your-api-key-here"
 name = "deepseek-v3.1"
 
-auto_temperature = true
-
 [[model]]
 api_base = "https://apis.iflow.cn/v1"
 api_key = "your-api-key-here"
 name = "deepseek-r1"
 
-auto_temperature = true
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "your-api-key-here"
+name = "qwen3-coder"
 
-[workflow-integration.analyzer]
-ref = "glm-4.6"
-auto_temperature = true
+[[model]]
+api_base = "https://api.tbox.cn/api/llm/v1"
+api_key = "your-api-key-here"
+name = "ring-1t"
 
-[[workflow-integration.workers]]
-name = "qwen3-max"
-temperature = 0.4
-
-[[workflow-integration.workers]]
-name = "qwen3-vl-plus"
-temperature = 0.4
-
-[[workflow-integration.workers]]
-name = "kimi-k2-0905"
-temperature = 0.4
-
-[[workflow-integration.workers]]
-name = "glm-4.6"
-temperature = 0.4
-
-[[workflow-integration.workers]]
-name = "deepseek-v3.2"
-temperature = 0.4
-
-[[workflow-integration.workers]]
-name = "deepseek-v3.1"
-temperature = 0.4
-
-[[workflow-integration.workers]]
-name = "deepseek-r1"
-temperature = 0.4
-
-[workflow-integration.synthesizer]
-ref = "glm-4.6"
+[workflow-integration]
+json = """{
+  "analyzer": {
+    "ref": "glm-4.6",
+    "auto_temperature": true
+  },
+  "workers": [
+    {
+      "name": "deepseek-r1",
+      "temperature": 0.4
+    },
+    {
+      "name": "deepseek-v3.2",
+      "temperature": 0.4
+    },
+    {
+      "analyzer": {
+        "ref": "glm-4.6",
+        "auto_temperature": true
+      },
+      "workers": [
+        {
+          "name": "kimi-k2-0905",
+          "temperature": 0.4
+        },
+        {
+          "name": "deepseek-v3.2",
+          "temperature": 0.4
+        },
+        {
+          "name": "glm-4.6",
+          "temperature": 0.4
+        },
+        {
+          "analyzer": {
+            "ref": "glm-4.6",
+            "auto_temperature": true
+          },
+          "workers": [
+            {
+              "name": "qwen3-coder",
+              "temperature": 0.4
+            },
+            {
+              "name": "deepseek-v3.1",
+              "temperature": 0.4
+            },
+            {
+              "name": "glm-4.6",
+              "temperature": 0.4
+            }
+          ],
+          "synthesizer": {
+            "ref": "glm-4.6"
+          }
+        }
+      ],
+      "synthesizer": {
+        "ref": "glm-4.6"
+      }
+    }
+  ],
+  "synthesizer": {
+    "ref": "glm-4.6"
+  }
+}"""
 
 [workflow.timeouts]
 analyzer_timeout_secs = 30000
@@ -111,7 +147,10 @@ pub struct Config {
     pub server: ServerConfig,
     #[serde(rename = "model", deserialize_with = "deserialize_models")]
     pub models: Vec<ModelConfig>,
-    #[serde(rename = "workflow-integration")]
+    #[serde(
+        rename = "workflow-integration",
+        deserialize_with = "deserialize_workflow_plan"
+    )]
     pub workflow_integration: WorkflowPlan,
     pub workflow: WorkflowConfig,
 }
@@ -148,6 +187,64 @@ impl WorkflowPlan {
 
     pub fn worker_labels(&self) -> Vec<String> {
         self.workers.iter().map(WorkflowWorker::label).collect()
+    }
+
+    pub fn to_json_string(&self) -> Result<String> {
+        let value = self.to_json_value()?;
+        serde_json::to_string_pretty(&value)
+            .with_context(|| "Failed to serialize workflow integration to JSON")
+    }
+
+    pub fn from_json_str(json: &str) -> Result<Self> {
+        serde_json::from_str(json)
+            .with_context(|| "Failed to parse workflow integration JSON")
+    }
+
+    fn to_json_value(&self) -> Result<JsonValue> {
+        let mut map = JsonMap::new();
+        map.insert(
+            "analyzer".to_string(),
+            JsonValue::Object(Self::target_to_json_map(&self.analyzer, "ref")),
+        );
+
+        let mut workers = Vec::with_capacity(self.workers.len());
+        for worker in &self.workers {
+            workers.push(Self::worker_to_json(worker)?);
+        }
+        map.insert("workers".to_string(), JsonValue::Array(workers));
+        map.insert(
+            "synthesizer".to_string(),
+            JsonValue::Object(Self::target_to_json_map(&self.synthesizer, "ref")),
+        );
+
+        Ok(JsonValue::Object(map))
+    }
+
+    fn worker_to_json(worker: &WorkflowWorker) -> Result<JsonValue> {
+        match worker {
+            WorkflowWorker::Model(target) => Ok(JsonValue::Object(Self::target_to_json_map(
+                target,
+                "name",
+            ))),
+            WorkflowWorker::Workflow(plan) => plan.to_json_value(),
+        }
+    }
+
+    fn target_to_json_map(
+        target: &WorkflowModelTarget,
+        key: &str,
+    ) -> JsonMap<String, JsonValue> {
+        let mut map = JsonMap::new();
+        map.insert(key.to_string(), JsonValue::String(target.model.clone()));
+        if let Some(temp) = target.temperature {
+            if let Some(number) = JsonNumber::from_f64(temp as f64) {
+                map.insert("temperature".to_string(), JsonValue::Number(number));
+            }
+        }
+        if let Some(auto) = target.auto_temperature {
+            map.insert("auto_temperature".to_string(), JsonValue::Bool(auto));
+        }
+        map
     }
 }
 
@@ -216,6 +313,32 @@ where
     })
 }
 
+fn deserialize_workflow_plan<'de, D>(deserializer: D) -> std::result::Result<WorkflowPlan, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    struct JsonWrapper {
+        json: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum PlanInput {
+        Json(JsonWrapper),
+        PlainString(String),
+        Plan(WorkflowPlan),
+    }
+
+    match PlanInput::deserialize(deserializer)? {
+        PlanInput::Json(wrapper) => WorkflowPlan::from_json_str(&wrapper.json)
+            .map_err(|err| DeError::custom(format!("Failed to parse workflow json: {}", err))),
+        PlanInput::PlainString(json) => WorkflowPlan::from_json_str(&json)
+            .map_err(|err| DeError::custom(format!("Failed to parse workflow json: {}", err))),
+        PlanInput::Plan(plan) => Ok(plan),
+    }
+}
+
 #[cfg(test)]
 mod tests_support {
     pub use super::*;
@@ -269,16 +392,21 @@ impl Config {
         let content = fs::read_to_string(config_path)
             .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
 
-        let mut value: Value = match toml::from_str(&content) {
+        let value: Value = match toml::from_str(&content) {
             Ok(value) => value,
             Err(_) => return Ok(()),
         };
 
-        let mut migrations: Vec<&str> = Vec::new();
-
-        let legacy_detected = value
+        let workflow_table = value
             .get("workflow-integration")
-            .and_then(Value::as_table)
+            .and_then(Value::as_table);
+
+        let has_json = workflow_table
+            .and_then(|table| table.get("json"))
+            .and_then(Value::as_str)
+            .is_some();
+
+        let legacy_fields_present = workflow_table
             .map(|table| {
                 table.contains_key("analyzer_model")
                     || table.contains_key("worker_models")
@@ -286,9 +414,15 @@ impl Config {
             })
             .unwrap_or(false);
 
-        if legacy_detected {
+        if has_json && !legacy_fields_present {
+            return Ok(());
+        }
+
+        let mut migrations: Vec<&str> = Vec::new();
+
+        let config = if legacy_fields_present {
             tracing::info!(
-                "Detected legacy workflow-integration format, migrating to analyzer/workers/synthesizer map"
+                "Detected legacy workflow-integration format, migrating to workflow plan JSON"
             );
 
             #[derive(Deserialize)]
@@ -311,52 +445,44 @@ impl Config {
             let legacy: LegacyConfig = toml::from_str(&content)
                 .with_context(|| "Failed to parse legacy config format")?;
 
-            let plan = WorkflowPlan {
-                analyzer: WorkflowModelTarget {
-                    model: legacy.workflow_integration.analyzer_model,
-                    temperature: None,
-                    auto_temperature: None,
-                },
-                workers: legacy
-                    .workflow_integration
-                    .worker_models
-                    .into_iter()
-                    .map(|model| {
-                        WorkflowWorker::Model(WorkflowModelTarget {
-                            model,
-                            temperature: None,
-                            auto_temperature: None,
-                        })
-                    })
-                    .collect(),
-                synthesizer: WorkflowModelTarget {
-                    model: legacy.workflow_integration.synthesizer_model,
-                    temperature: None,
-                    auto_temperature: None,
-                },
-            };
+            migrations.push("workflow 节点结构");
 
-            let new_config = Config {
+            Config {
                 server: legacy.server,
                 models: legacy.models,
-                workflow_integration: plan,
+                workflow_integration: WorkflowPlan {
+                    analyzer: WorkflowModelTarget {
+                        model: legacy.workflow_integration.analyzer_model,
+                        temperature: None,
+                        auto_temperature: None,
+                    },
+                    workers: legacy
+                        .workflow_integration
+                        .worker_models
+                        .into_iter()
+                        .map(|model| {
+                            WorkflowWorker::Model(WorkflowModelTarget {
+                                model,
+                                temperature: None,
+                                auto_temperature: None,
+                            })
+                        })
+                        .collect(),
+                    synthesizer: WorkflowModelTarget {
+                        model: legacy.workflow_integration.synthesizer_model,
+                        temperature: None,
+                        auto_temperature: None,
+                    },
+                },
                 workflow: legacy.workflow,
-            };
+            }
+        } else {
+            toml::from_str::<Config>(&content)
+                .with_context(|| "Failed to parse config for migration")?
+        };
 
-            value = toml::from_str(
-                &toml::to_string_pretty(&new_config)
-                    .with_context(|| "Failed to serialize migrated config")?,
-            )
-            .with_context(|| "Failed to parse migrated config back into value")?;
-
-            migrations.push("workflow 节点结构");
-        }
-
-        if Self::migrate_worker_name_fields(&mut value) {
-            tracing::info!(
-                "Detected workflow workers using `ref`, migrating them to the new `name` field"
-            );
-            migrations.push("workers.name 字段");
+        if !has_json {
+            migrations.push("workflow json 格式");
         }
 
         if migrations.is_empty() {
@@ -372,8 +498,10 @@ impl Config {
             migrations.join("，")
         ));
         new_content.push_str(&format!("# 旧配置已备份到: {}\n\n", backup_path.display()));
+
+        let new_value = Self::config_to_toml_value(&config)?;
         new_content.push_str(
-            &toml::to_string_pretty(&value)
+            &toml::to_string_pretty(&new_value)
                 .with_context(|| "Failed to serialize migrated config")?,
         );
 
@@ -382,57 +510,40 @@ impl Config {
 
         tracing::info!(
             "Config migration completed successfully: {}",
-            migrations.join(", ")
+            migrations.join("，")
         );
         tracing::info!("New config written to: {}", config_path.display());
 
         Ok(())
     }
 
-    fn migrate_worker_name_fields(value: &mut Value) -> bool {
-        if let Value::Table(table) = value {
-            if let Some(workflow) = table.get_mut("workflow-integration") {
-                return Self::migrate_worker_name_fields_in_plan(workflow);
-            }
-        }
-        false
-    }
+    fn config_to_toml_value(config: &Config) -> Result<Value> {
+        let mut root = toml::map::Map::new();
 
-    fn migrate_worker_name_fields_in_plan(plan: &mut Value) -> bool {
-        if let Value::Table(map) = plan {
-            let mut changed = false;
-            if let Some(workers) = map.get_mut("workers") {
-                if let Value::Array(array) = workers {
-                    for worker in array {
-                        if Self::migrate_worker_name_fields_in_worker(worker) {
-                            changed = true;
-                        }
-                    }
-                }
-            }
-            changed
-        } else {
-            false
-        }
-    }
+        let server_value = Value::try_from(&config.server)
+            .with_context(|| "Failed to serialize server config")?;
+        root.insert("server".to_string(), server_value);
 
-    fn migrate_worker_name_fields_in_worker(worker: &mut Value) -> bool {
-        if let Value::Table(table) = worker {
-            if table.contains_key("analyzer")
-                || table.contains_key("workers")
-                || table.contains_key("synthesizer")
-            {
-                return Self::migrate_worker_name_fields_in_plan(worker);
-            }
+        let models_value = Value::try_from(&config.models)
+            .with_context(|| "Failed to serialize model configs")?;
+        root.insert("model".to_string(), models_value);
 
-            if table.contains_key("ref") && !table.contains_key("name") {
-                if let Some(value) = table.remove("ref") {
-                    table.insert("name".to_string(), value);
-                    return true;
-                }
-            }
-        }
-        false
+        let workflow_json = config
+            .workflow_integration
+            .to_json_string()
+            .with_context(|| "Failed to serialize workflow integration to JSON string")?;
+        let mut workflow_integration = toml::map::Map::new();
+        workflow_integration.insert("json".to_string(), Value::String(workflow_json));
+        root.insert(
+            "workflow-integration".to_string(),
+            Value::Table(workflow_integration),
+        );
+
+        let workflow_value = Value::try_from(&config.workflow)
+            .with_context(|| "Failed to serialize workflow configuration")?;
+        root.insert("workflow".to_string(), workflow_value);
+
+        Ok(Value::Table(root))
     }
 
     fn backup_config_file(config_path: &Path) -> Result<PathBuf> {

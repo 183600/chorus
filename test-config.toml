@@ -9,15 +9,21 @@ name = "glm-4.6"
 # temperature = 1.4  # 可选：设置温度值（0.0-2.0），不设置则使用模型默认值
 # auto_temperature = false  # 可选：是否由大模型自动选择温度，默认 false
 
-[workflow-integration.analyzer]
-ref = "glm-4.6"
-auto_temperature = true
-
-[[workflow-integration.workers]]
-name = "glm-4.6"
-
-[workflow-integration.synthesizer]
-ref = "glm-4.6"
+[workflow-integration]
+json = """{
+  "analyzer": {
+    "ref": "glm-4.6",
+    "auto_temperature": true
+  },
+  "workers": [
+    {
+      "name": "glm-4.6"
+    }
+  ],
+  "synthesizer": {
+    "ref": "glm-4.6"
+  }
+}"""
 
 # 全局超时配置
 [workflow.timeouts]
