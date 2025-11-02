@@ -339,10 +339,6 @@ where
     }
 }
 
-#[cfg(test)]
-mod tests_support {
-    pub use super::*;
-}
 
 impl Config {
     pub fn load_auto() -> Result<Self> {
@@ -442,39 +438,47 @@ impl Config {
                 workflow: WorkflowConfig,
             }
 
-            let legacy: LegacyConfig = toml::from_str(&content)
-                .with_context(|| "Failed to parse legacy config format")?;
-
             migrations.push("workflow 节点结构");
 
-            Config {
-                server: legacy.server,
-                models: legacy.models,
-                workflow_integration: WorkflowPlan {
-                    analyzer: WorkflowModelTarget {
-                        model: legacy.workflow_integration.analyzer_model,
-                        temperature: None,
-                        auto_temperature: None,
-                    },
-                    workers: legacy
-                        .workflow_integration
-                        .worker_models
-                        .into_iter()
-                        .map(|model| {
-                            WorkflowWorker::Model(WorkflowModelTarget {
-                                model,
-                                temperature: None,
-                                auto_temperature: None,
+            match toml::from_str::<LegacyConfig>(&content) {
+                Ok(legacy) => Config {
+                    server: legacy.server,
+                    models: legacy.models,
+                    workflow_integration: WorkflowPlan {
+                        analyzer: WorkflowModelTarget {
+                            model: legacy.workflow_integration.analyzer_model,
+                            temperature: None,
+                            auto_temperature: None,
+                        },
+                        workers: legacy
+                            .workflow_integration
+                            .worker_models
+                            .into_iter()
+                            .map(|model| {
+                                WorkflowWorker::Model(WorkflowModelTarget {
+                                    model,
+                                    temperature: None,
+                                    auto_temperature: None,
+                                })
                             })
-                        })
-                        .collect(),
-                    synthesizer: WorkflowModelTarget {
-                        model: legacy.workflow_integration.synthesizer_model,
-                        temperature: None,
-                        auto_temperature: None,
+                            .collect(),
+                        synthesizer: WorkflowModelTarget {
+                            model: legacy.workflow_integration.synthesizer_model,
+                            temperature: None,
+                            auto_temperature: None,
+                        },
                     },
+                    workflow: legacy.workflow,
                 },
-                workflow: legacy.workflow,
+                Err(err) => {
+                    tracing::warn!(
+                        "Detected legacy workflow-integration fields but failed to parse legacy format: {}. Falling back to workflow plan JSON parser.",
+                        err
+                    );
+                    toml::from_str::<Config>(&content).with_context(|| {
+                        "Failed to parse config after falling back to workflow plan JSON parser"
+                    })?
+                }
             }
         } else {
             toml::from_str::<Config>(&content)
