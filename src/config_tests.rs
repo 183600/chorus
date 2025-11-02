@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::config::{Config, TimeoutConfig, WorkflowWorker};
+    use crate::config::{Config, WorkflowWorker};
 
     const CFG_LEGACY: &str = r#"
 [server]
@@ -480,5 +479,103 @@ json = """
 
         assert_eq!(worker_names, vec!["qwen3-max", "glm-4.6", "ring-1t"]);
         assert!(cfg.workflow.domains.is_empty());
+    }
+
+    #[test]
+    fn migration_falls_back_when_legacy_analyzer_missing() {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        struct HomeGuard {
+            original: Option<String>,
+        }
+
+        impl Drop for HomeGuard {
+            fn drop(&mut self) {
+                if let Some(ref value) = self.original {
+                    std::env::set_var("HOME", value);
+                } else {
+                    std::env::remove_var("HOME");
+                }
+            }
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "chorus_partial_legacy_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+
+        let home_guard = HomeGuard {
+            original: std::env::var("HOME").ok(),
+        };
+        std::env::set_var("HOME", temp_dir.as_os_str());
+
+        let config_dir = temp_dir.join(".config/chorus");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let config_path = config_dir.join("config.toml");
+        let config_content = r#"
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+api_base = "https://api.example.com/v1"
+api_key = "k"
+name = "glm-4.6"
+
+[[model]]
+api_base = "https://api.example.com/v1"
+api_key = "k"
+name = "qwen3-max"
+
+[workflow-integration]
+worker_models = ["qwen3-max", "glm-4.6"]
+synthesizer_model = "glm-4.6"
+json = """
+{
+  "analyzer": {
+    "ref": "glm-4.6"
+  },
+  "workers": [
+    {
+      "name": "qwen3-max"
+    },
+    {
+      "name": "glm-4.6"
+    }
+  ],
+  "synthesizer": {
+    "ref": "glm-4.6"
+  }
+}"""
+
+[workflow.timeouts]
+analyzer_timeout_secs = 30000
+worker_timeout_secs = 60000
+synthesizer_timeout_secs = 60000
+
+[workflow.domains]
+"#;
+        fs::write(&config_path, config_content).unwrap();
+
+        let cfg = Config::load_from_user_config().unwrap();
+
+        let migrated = fs::read_to_string(&config_path).unwrap();
+        assert!(!migrated.contains("analyzer_model"));
+        assert!(!migrated.contains("worker_models"));
+        assert!(!migrated.contains("synthesizer_model"));
+        assert!(migrated.contains("[workflow-integration]"));
+        assert!(migrated.contains("json = \"\"\""));
+
+        assert_eq!(cfg.workflow_integration.analyzer.model, "glm-4.6");
+        assert_eq!(cfg.workflow_integration.workers.len(), 2);
+        assert_eq!(cfg.workflow_integration.synthesizer.model, "glm-4.6");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+        drop(home_guard);
     }
 }
