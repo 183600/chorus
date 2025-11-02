@@ -1,0 +1,101 @@
+# Chorus 配置文件示例 - JSON 工作流格式
+# 这个示例展示了如何使用 JSON 格式配置工作流集成
+
+# 服务器配置
+[server]
+host = "127.0.0.1"
+port = 11435
+
+# 模型配置 - 定义所有可用的模型
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "your-api-key-here"
+name = "qwen3-max"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "your-api-key-here"
+name = "kimi-k2-0905"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "your-api-key-here"
+name = "glm-4.6"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "your-api-key-here"
+name = "deepseek-v3.2"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "your-api-key-here"
+name = "deepseek-v3.1"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "your-api-key-here"
+name = "deepseek-r1"
+
+[[model]]
+api_base = "https://api.tbox.cn/api/llm/v1"
+api_key = "your-api-key-here"
+name = "ring-1t"
+
+# 工作流集成配置 - 使用 JSON 格式
+# 这是推荐的配置格式，支持嵌套工作流和详细的参数配置
+[workflow-integration]
+json = """
+{
+  "analyzer": {
+    "ref": "glm-4.6",
+    "auto_temperature": true
+  },
+  "workers": [
+    {
+      "name": "qwen3-max",
+      "temperature": 0.4
+    },
+    {
+      "name": "kimi-k2-0905",
+      "temperature": 0.4
+    },
+    {
+      "name": "glm-4.6",
+      "temperature": 0.4
+    },
+    {
+      "name": "deepseek-v3.2",
+      "temperature": 0.4
+    },
+    {
+      "name": "deepseek-v3.1",
+      "temperature": 0.4
+    },
+    {
+      "name": "deepseek-r1",
+      "temperature": 0.4
+    },
+    {
+      "name": "ring-1t",
+      "temperature": 0.4
+    }
+  ],
+  "synthesizer": {
+    "ref": "glm-4.6"
+  }
+}"""
+
+# 工作流超时配置
+[workflow.timeouts]
+analyzer_timeout_secs = 30000
+worker_timeout_secs = 60000
+synthesizer_timeout_secs = 60000
+
+# 域名特定的超时覆盖（可选）
+[workflow.domains]
+
+# 示例：为特定域名配置不同的超时
+# [workflow.domains."api.example.com"]
+# analyzer_timeout_secs = 40000
+# worker_timeout_secs = 80000

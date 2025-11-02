@@ -409,4 +409,76 @@ json = """
         assert_eq!(cfg.workflow.timeouts.worker_timeout_secs, 60000);
         assert_eq!(cfg.workflow.timeouts.synthesizer_timeout_secs, 60000);
     }
+
+    #[test]
+    fn test_json_format_with_empty_domains() {
+        const CFG: &str = r#"
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-test"
+name = "qwen3-max"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-test"
+name = "glm-4.6"
+
+[[model]]
+api_base = "https://api.tbox.cn/api/llm/v1"
+api_key = "sk-test"
+name = "ring-1t"
+
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[workflow.domains]
+
+[workflow.timeouts]
+analyzer_timeout_secs = 30000
+synthesizer_timeout_secs = 60000
+worker_timeout_secs = 60000
+
+[workflow-integration]
+json = """
+{
+  "analyzer": {
+    "ref": "glm-4.6"
+  },
+  "synthesizer": {
+    "ref": "glm-4.6"
+  },
+  "workers": [
+    {
+      "name": "qwen3-max"
+    },
+    {
+      "name": "glm-4.6"
+    },
+    {
+      "name": "ring-1t"
+    }
+  ]
+}"""
+"#;
+
+        let cfg: Config = toml::from_str(CFG).unwrap();
+        assert_eq!(cfg.models.len(), 3);
+        assert_eq!(cfg.workflow_integration.analyzer.model, "glm-4.6");
+        assert_eq!(cfg.workflow_integration.synthesizer.model, "glm-4.6");
+        assert_eq!(cfg.workflow_integration.workers.len(), 3);
+        
+        let worker_names: Vec<String> = cfg
+            .workflow_integration
+            .workers
+            .iter()
+            .map(|w| match w {
+                WorkflowWorker::Model(target) => target.model.clone(),
+                WorkflowWorker::Workflow(_) => panic!("expected model worker"),
+            })
+            .collect();
+
+        assert_eq!(worker_names, vec!["qwen3-max", "glm-4.6", "ring-1t"]);
+        assert!(cfg.workflow.domains.is_empty());
+    }
 }
