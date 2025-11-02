@@ -281,4 +281,132 @@ synthesizer_timeout_secs = 30
         assert_eq!(eff.worker_timeout_secs, 200); // fallback
         assert_eq!(eff.synthesizer_timeout_secs, 30);
     }
+
+    #[test]
+    fn user_format_with_multiple_workers_using_name() {
+        const USER_CFG: &str = r#"
+# Chorus 配置文件（已自动迁移：workflow json 格式）
+# 旧配置已备份到: /home/user/.config/chorus/config.toml.bak.1762015072
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-test"
+name = "qwen3-max"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-test"
+name = "qwen3-vl-plus"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-test"
+name = "kimi-k2-0905"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-test"
+name = "glm-4.6"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-test"
+name = "deepseek-v3.2"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-test"
+name = "deepseek-v3.1"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-test"
+name = "deepseek-r1"
+
+[[model]]
+api_base = "https://api.tbox.cn/api/llm/v1"
+api_key = "sk-test"
+name = "ring-1t"
+
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[workflow.domains]
+
+[workflow.timeouts]
+analyzer_timeout_secs = 30000
+worker_timeout_secs = 60000
+synthesizer_timeout_secs = 60000
+
+[workflow-integration]
+json = """
+{
+  "analyzer": {
+    "ref": "glm-4.6"
+  },
+  "synthesizer": {
+    "ref": "glm-4.6"
+  },
+  "workers": [
+    {
+      "name": "qwen3-max"
+    },
+    {
+      "name": "kimi-k2-0905"
+    },
+    {
+      "name": "glm-4.6"
+    },
+    {
+      "name": "deepseek-v3.2"
+    },
+    {
+      "name": "deepseek-v3.1"
+    },
+    {
+      "name": "deepseek-r1"
+    },
+    {
+      "name": "ring-1t"
+    }
+  ]
+}"""
+"#;
+
+        let cfg: Config = toml::from_str(USER_CFG).unwrap();
+
+        assert_eq!(cfg.models.len(), 8);
+        assert_eq!(cfg.workflow_integration.analyzer.model, "glm-4.6");
+        assert_eq!(cfg.workflow_integration.synthesizer.model, "glm-4.6");
+        assert_eq!(cfg.workflow_integration.workers.len(), 7);
+
+        let worker_names: Vec<String> = cfg
+            .workflow_integration
+            .workers
+            .iter()
+            .map(|w| match w {
+                WorkflowWorker::Model(target) => target.model.clone(),
+                WorkflowWorker::Workflow(_) => panic!("expected model worker"),
+            })
+            .collect();
+
+        assert_eq!(
+            worker_names,
+            vec![
+                "qwen3-max",
+                "kimi-k2-0905",
+                "glm-4.6",
+                "deepseek-v3.2",
+                "deepseek-v3.1",
+                "deepseek-r1",
+                "ring-1t"
+            ]
+        );
+
+        assert!(cfg.workflow.domains.is_empty());
+        assert_eq!(cfg.workflow.timeouts.analyzer_timeout_secs, 30000);
+        assert_eq!(cfg.workflow.timeouts.worker_timeout_secs, 60000);
+        assert_eq!(cfg.workflow.timeouts.synthesizer_timeout_secs, 60000);
+    }
 }
