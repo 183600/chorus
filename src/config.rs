@@ -4,6 +4,7 @@ use serde::de::Error as DeError;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use std::collections::HashMap;
 use std::env;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -161,7 +162,7 @@ pub struct ServerConfig {
     pub port: u16,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub name: String,
     pub api_base: String,
@@ -170,6 +171,55 @@ pub struct ModelConfig {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub auto_temperature: Option<bool>,
+}
+
+impl ModelConfig {
+    pub fn redacted_api_key(&self) -> String {
+        redact_secret(&self.api_key)
+    }
+}
+
+impl fmt::Debug for ModelConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ModelConfig")
+            .field("name", &self.name)
+            .field("api_base", &self.api_base)
+            .field("api_key", &Redacted(&self.api_key))
+            .field("temperature", &self.temperature)
+            .field("auto_temperature", &self.auto_temperature)
+            .finish()
+    }
+}
+
+struct Redacted<'a>(&'a str);
+
+impl fmt::Debug for Redacted<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&redact_secret(self.0))
+    }
+}
+
+fn redact_secret(value: &str) -> String {
+    if value.is_empty() {
+        return "[redacted]".to_string();
+    }
+
+    let char_count = value.chars().count();
+    if char_count <= 8 {
+        return "*".repeat(char_count);
+    }
+
+    let prefix: String = value.chars().take(4).collect();
+    let suffix: String = value
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    format!("{}***{}", prefix, suffix)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -2,6 +2,22 @@
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 
+
+def _redact_secret(value: str) -> str:
+    if not value:
+        return "[redacted]"
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}***{value[-4:]}"
+
+def _redact_authorization(header: str) -> str:
+    if not header:
+        return "[missing]"
+    if header.lower().startswith("bearer "):
+        token = header[7:]
+        return f"Bearer {_redact_secret(token)}"
+    return _redact_secret(header)
+
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path != "/chat/completions":
@@ -9,7 +25,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         auth = self.headers.get('Authorization')
-        print(f"AUTH_HEADER={auth}")
+        print(f"AUTH_HEADER={_redact_authorization(auth)}")
         length = int(self.headers.get('Content-Length','0'))
         _ = self.rfile.read(length)
         self.send_response(200)

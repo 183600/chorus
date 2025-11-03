@@ -578,4 +578,45 @@ synthesizer_timeout_secs = 60000
         let _ = fs::remove_dir_all(&temp_dir);
         drop(home_guard);
     }
+
+    #[test]
+    fn model_config_debug_redacts_api_key() {
+        const CFG: &str = r#"
+[[model]]
+api_base = "https://api.example.com/v1"
+api_key = "sk-secret-abc123"
+name = "test-model"
+
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[workflow-integration]
+json = """
+{
+  "analyzer": {
+    "ref": "test-model"
+  },
+  "workers": [],
+  "synthesizer": {
+    "ref": "test-model"
+  }
+}"""
+
+[workflow.timeouts]
+analyzer_timeout_secs = 30
+worker_timeout_secs = 60
+synthesizer_timeout_secs = 90
+"#;
+
+        let cfg: Config = toml::from_str(CFG).unwrap();
+        let debug_repr = format!("{:?}", &cfg.models[0]);
+        assert!(!debug_repr.contains("sk-secret-abc123"));
+        assert!(debug_repr.contains("api_key"));
+        assert!(debug_repr.contains('*') || debug_repr.contains("[redacted]"));
+
+        let redacted = cfg.models[0].redacted_api_key();
+        assert_ne!(redacted, "sk-secret-abc123");
+        assert!(!redacted.contains("secret-abc123"));
+    }
 }
