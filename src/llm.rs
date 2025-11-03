@@ -183,10 +183,225 @@ impl LLMClient {
             return Ok(obj.to_string());
         }
 
+        if let Some(err_msg) = detect_provider_error(&v) {
+            return Err(anyhow!(
+                "LLM provider {} (model {}) returned error: {}",
+                self.api_base,
+                model,
+                err_msg
+            ));
+        }
+
         Err(anyhow!(
             "LLM response missing content field: {}",
             v
         ))
+    }
+}
+
+fn detect_provider_error(value: &serde_json::Value) -> Option<String> {
+    if let Some(error_val) = value.get("error") {
+        if let Some(obj) = error_val.as_object() {
+            let message = [
+                "message",
+                "msg",
+                "error_message",
+                "error_msg",
+                "detail",
+            ]
+            .iter()
+            .filter_map(|key| obj.get(*key))
+            .filter_map(json_value_to_string)
+            .map(|s| s.trim().to_string())
+            .find(|s| !s.is_empty());
+            let code = ["code", "status", "type"]
+                .iter()
+                .filter_map(|key| obj.get(*key))
+                .filter_map(json_value_to_string)
+                .map(|s| s.trim().to_string())
+                .find(|s| !s.is_empty());
+            if let Some(msg) = message {
+                if let Some(code_str) = code {
+                    return Some(format!("{}: {}", code_str, msg));
+                } else {
+                    return Some(msg);
+                }
+            } else {
+                return Some(error_val.to_string());
+            }
+        } else if let Some(text) = json_value_to_string(error_val) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    if let Some(status_val) = value.get("status") {
+        if let Some(status_str) = interpret_status_like_error(status_val) {
+            let message = extract_message_fields(
+                value,
+                &["msg", "message", "error_message", "error_msg", "cause", "detail"],
+            );
+            return Some(match message {
+                Some(msg) => format!("status {}: {}", status_str, msg),
+                None => format!("status {}", status_str),
+            });
+        }
+    }
+
+    if let Some(code_val) = value.get("code") {
+        if let Some(code_str) = interpret_status_like_error(code_val) {
+            let message = extract_message_fields(
+                value,
+                &["message", "msg", "error_message", "error_msg", "cause", "detail"],
+            );
+            return Some(match message {
+                Some(msg) => format!("code {}: {}", code_str, msg),
+                None => format!("code {}", code_str),
+            });
+        }
+    }
+
+    if let Some(success) = value.get("success").and_then(|v| v.as_bool()) {
+        if !success {
+            if let Some(msg) = extract_message_fields(
+                value,
+                &["message", "msg", "error_message", "error_msg", "error"],
+            ) {
+                return Some(msg);
+            }
+            return Some("success flag was false".to_string());
+        }
+    }
+
+    if let Some(msg) = extract_message_fields(value, &["message", "msg"]) {
+        let lowered = msg.to_ascii_lowercase();
+        if lowered.contains("error")
+            || lowered.contains("invalid")
+            || lowered.contains("fail")
+            || lowered.contains("denied")
+            || lowered.contains("unauthorized")
+        {
+            return Some(msg);
+        }
+    }
+
+    None
+}
+
+fn interpret_status_like_error(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Number(n) => {
+            if let Some(int) = n.as_i64() {
+                if int != 0 && int != 200 {
+                    return Some(int.to_string());
+                }
+            } else if let Some(f) = n.as_f64() {
+                if f != 0.0 && f != 200.0 {
+                    return Some(f.to_string());
+                }
+            }
+            None
+        }
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if let Ok(int) = trimmed.parse::<i64>() {
+                if int != 0 && int != 200 {
+                    return Some(int.to_string());
+                }
+                return None;
+            }
+            let lowered = trimmed.to_ascii_lowercase();
+            if lowered == "ok"
+                || lowered == "success"
+                || lowered == "succeeded"
+                || lowered == "true"
+                || lowered == "0"
+                || lowered == "200"
+            {
+                None
+            } else if lowered.contains("error")
+                || lowered.contains("fail")
+                || lowered.contains("invalid")
+                || lowered.contains("denied")
+                || lowered.contains("unauthorized")
+            {
+                Some(trimmed.to_string())
+            } else {
+                None
+            }
+        }
+        serde_json::Value::Bool(b) => {
+            if *b {
+                None
+            } else {
+                Some("false".to_string())
+            }
+        }
+        _ => None,
+    }
+}
+
+fn extract_message_fields(value: &serde_json::Value, fields: &[&str]) -> Option<String> {
+    for key in fields {
+        if let Some(inner) = value.get(*key) {
+            if let Some(text) = json_value_to_string(inner) {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn json_value_to_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        serde_json::Value::Array(items) => {
+            let mut parts = Vec::new();
+            for item in items {
+                if let Some(text) = json_value_to_string(item) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        parts.push(trimmed.to_string());
+                    }
+                }
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join(" "))
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for key in &[
+                "message",
+                "msg",
+                "error_message",
+                "error_msg",
+                "detail",
+                "description",
+            ] {
+                if let Some(inner) = map.get(*key) {
+                    if let Some(text) = json_value_to_string(inner) {
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            return Some(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+            Some(value.to_string())
+        }
     }
 }
 
@@ -275,4 +490,48 @@ mod tests {
         let response = r#"{"temperature": 3.5}"#;
         assert_eq!(parse_temperature_from_response(response), 2.0);
     }
+
+    #[test]
+    fn detects_status_based_error_message() {
+        let value = serde_json::json!({
+            "status": "434",
+            "msg": "Invalid apiKey"
+        });
+        let err = detect_provider_error(&value).expect("expected error");
+        assert!(err.contains("434"));
+        assert!(err.to_ascii_lowercase().contains("invalid"));
+    }
+
+    #[test]
+    fn detects_error_object_code() {
+        let value = serde_json::json!({
+            "error": {
+                "code": "invalid_api_key",
+                "message": "No API key provided"
+            }
+        });
+        let err = detect_provider_error(&value).expect("expected error");
+        assert!(err.to_ascii_lowercase().contains("invalid_api_key"));
+        assert!(err.contains("No API key provided"));
+    }
+
+    #[test]
+    fn detects_success_flag_false_message() {
+        let value = serde_json::json!({
+            "success": false,
+            "message": "Request failed"
+        });
+        let err = detect_provider_error(&value).expect("expected error");
+        assert!(err.contains("Request failed"));
+    }
+
+    #[test]
+    fn ignores_successful_status_values() {
+        let value = serde_json::json!({
+            "status": 0,
+            "msg": "ok"
+        });
+        assert!(detect_provider_error(&value).is_none());
+    }
+
 }
