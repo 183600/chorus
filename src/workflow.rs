@@ -183,7 +183,31 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
         base_temperature: f32,
         depth: usize,
     ) -> Result<Vec<(String, String)>> {
+        let plan_label = plan.label();
+
+        if plan.workers.is_empty() {
+            tracing::error!(
+                plan = %plan_label,
+                depth,
+                "Workflow plan is missing worker nodes"
+            );
+            return Err(anyhow!(
+                "Workflow plan {} has no worker nodes configured at depth {}. Please define at least one worker in the workflow configuration.",
+                plan_label,
+                depth
+            ));
+        }
+
         let mut responses = Vec::new();
+        let mut worker_errors: Vec<String> = Vec::new();
+        let normalize_error = |input: &str| -> String {
+            let sanitized = input.split_whitespace().collect::<Vec<_>>().join(" ");
+            if sanitized.is_empty() {
+                "<unknown error>".to_string()
+            } else {
+                sanitized
+            }
+        };
 
         for worker in &plan.workers {
             match worker {
@@ -211,12 +235,15 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
                             responses.push((target.model.clone(), response));
                         }
                         Err(err) => {
+                            let err_display = err.to_string();
                             tracing::warn!(
-                                "Worker {} failed at depth {}: {}",
-                                target.model,
+                                worker = %target.model,
                                 depth,
-                                err
+                                error = %err_display,
+                                "Worker call failed"
                             );
+                            let detail = normalize_error(&err_display);
+                            worker_errors.push(format!("{}: {}", target.model, detail));
                         }
                     }
                 }
@@ -242,12 +269,15 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
                             responses.push((label, response));
                         }
                         Err(err) => {
+                            let err_display = err.to_string();
                             tracing::warn!(
-                                "Nested workflow {} failed at depth {}: {}",
-                                label,
+                                workflow = %label,
                                 depth,
-                                err
+                                error = %err_display,
+                                "Nested workflow failed"
                             );
+                            let detail = normalize_error(&err_display);
+                            worker_errors.push(format!("{}: {}", label, detail));
                         }
                     }
                 }
@@ -255,11 +285,22 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
         }
 
         if responses.is_empty() {
-            return Err(anyhow!(
+            let mut message = format!(
                 "All worker nodes failed at depth {} for plan {}",
                 depth,
-                plan.label()
-            ));
+                plan_label
+            );
+            if !worker_errors.is_empty() {
+                message.push_str(". Worker errors: ");
+                message.push_str(&worker_errors.join(" | "));
+            } else {
+                let labels = plan.worker_labels();
+                if !labels.is_empty() {
+                    message.push_str(". Configured workers: ");
+                    message.push_str(&labels.join(", "));
+                }
+            }
+            return Err(anyhow!(message));
         }
 
         Ok(responses)
@@ -424,4 +465,103 @@ fn extract_domain_from_url(url: &str) -> Option<String> {
     Url::parse(url)
         .ok()
         .and_then(|u| u.host_str().map(|s| s.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        Config, ModelConfig, ServerConfig, TimeoutConfig, WorkflowConfig, WorkflowModelTarget,
+        WorkflowPlan, WorkflowWorker,
+    };
+    use std::collections::HashMap;
+
+    fn build_test_config_with_workers(workers: Vec<WorkflowWorker>) -> Config {
+        Config {
+            server: ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 11435,
+            },
+            models: vec![ModelConfig {
+                name: "primary".to_string(),
+                api_base: "http://localhost".to_string(),
+                api_key: "sk-test".to_string(),
+                temperature: Some(0.2),
+                auto_temperature: None,
+            }],
+            workflow_integration: WorkflowPlan {
+                analyzer: WorkflowModelTarget {
+                    model: "primary".to_string(),
+                    temperature: Some(0.2),
+                    auto_temperature: None,
+                },
+                workers,
+                synthesizer: WorkflowModelTarget {
+                    model: "primary".to_string(),
+                    temperature: Some(0.2),
+                    auto_temperature: None,
+                },
+            },
+            workflow: WorkflowConfig {
+                timeouts: TimeoutConfig {
+                    analyzer_timeout_secs: 30,
+                    worker_timeout_secs: 30,
+                    synthesizer_timeout_secs: 30,
+                },
+                domains: HashMap::new(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn reports_missing_workers_in_error() {
+        let config = build_test_config_with_workers(Vec::new());
+        let engine = WorkflowEngine::new(config);
+        let err = engine
+            .process("hello world".to_string())
+            .await
+            .expect_err("expected failure when no workers configured");
+        let message = err.to_string();
+        assert!(
+            message.contains("workflow:primary"),
+            "message did not include plan label: {}",
+            message
+        );
+        assert!(
+            message.contains("no worker nodes configured"),
+            "message did not explain worker misconfiguration: {}",
+            message
+        );
+    }
+
+    #[tokio::test]
+    async fn includes_worker_failure_details() {
+        let workers = vec![WorkflowWorker::Model(WorkflowModelTarget {
+            model: "missing".to_string(),
+            temperature: None,
+            auto_temperature: None,
+        })];
+        let config = build_test_config_with_workers(workers);
+        let engine = WorkflowEngine::new(config);
+        let err = engine
+            .process("hello world".to_string())
+            .await
+            .expect_err("expected failure when worker model missing");
+        let message = err.to_string();
+        assert!(
+            message.contains("missing"),
+            "message did not include worker label: {}",
+            message
+        );
+        assert!(
+            message.contains("Model 'missing' not found in configuration"),
+            "message did not include underlying error: {}",
+            message
+        );
+        assert!(
+            message.contains("Worker errors"),
+            "message did not include worker errors section: {}",
+            message
+        );
+    }
 }
