@@ -466,7 +466,7 @@ json = """
         assert_eq!(cfg.workflow_integration.analyzer.model, "glm-4.6");
         assert_eq!(cfg.workflow_integration.synthesizer.model, "glm-4.6");
         assert_eq!(cfg.workflow_integration.workers.len(), 3);
-        
+
         let worker_names: Vec<String> = cfg
             .workflow_integration
             .workers

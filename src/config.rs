@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use serde::{de::Deserializer, Deserialize, Serialize};
 use serde::de::Error as DeError;
+use serde::{de::Deserializer, Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use std::collections::HashMap;
 use std::env;
@@ -196,8 +196,7 @@ impl WorkflowPlan {
     }
 
     pub fn from_json_str(json: &str) -> Result<Self> {
-        serde_json::from_str(json)
-            .with_context(|| "Failed to parse workflow integration JSON")
+        serde_json::from_str(json).with_context(|| "Failed to parse workflow integration JSON")
     }
 
     fn to_json_value(&self) -> Result<JsonValue> {
@@ -222,18 +221,14 @@ impl WorkflowPlan {
 
     fn worker_to_json(worker: &WorkflowWorker) -> Result<JsonValue> {
         match worker {
-            WorkflowWorker::Model(target) => Ok(JsonValue::Object(Self::target_to_json_map(
-                target,
-                "name",
-            ))),
+            WorkflowWorker::Model(target) => {
+                Ok(JsonValue::Object(Self::target_to_json_map(target, "name")))
+            }
             WorkflowWorker::Workflow(plan) => plan.to_json_value(),
         }
     }
 
-    fn target_to_json_map(
-        target: &WorkflowModelTarget,
-        key: &str,
-    ) -> JsonMap<String, JsonValue> {
+    fn target_to_json_map(target: &WorkflowModelTarget, key: &str) -> JsonMap<String, JsonValue> {
         let mut map = JsonMap::new();
         map.insert(key.to_string(), JsonValue::String(target.model.clone()));
         if let Some(temp) = target.temperature {
@@ -339,7 +334,6 @@ where
     }
 }
 
-
 impl Config {
     pub fn load_auto() -> Result<Self> {
         if let Ok(path) = env::var("CHORUS_CONFIG") {
@@ -347,7 +341,10 @@ impl Config {
             if path.exists() {
                 return Self::load(&path.to_string_lossy());
             } else {
-                tracing::warn!("CHORUS_CONFIG points to non-existent file: {}", path.display());
+                tracing::warn!(
+                    "CHORUS_CONFIG points to non-existent file: {}",
+                    path.display()
+                );
             }
         }
 
@@ -364,7 +361,10 @@ impl Config {
 
     fn user_config_path() -> Result<PathBuf> {
         let home = env::var("HOME").context("HOME env var not set")?;
-        Ok(Path::new(&home).join(".config").join("chorus").join("config.toml"))
+        Ok(Path::new(&home)
+            .join(".config")
+            .join("chorus")
+            .join("config.toml"))
     }
 
     fn ensure_user_config_exists() -> Result<PathBuf> {
@@ -393,9 +393,7 @@ impl Config {
             Err(_) => return Ok(()),
         };
 
-        let workflow_table = value
-            .get("workflow-integration")
-            .and_then(Value::as_table);
+        let workflow_table = value.get("workflow-integration").and_then(Value::as_table);
 
         let has_json = workflow_table
             .and_then(|table| table.get("json"))
@@ -509,8 +507,12 @@ impl Config {
                 .with_context(|| "Failed to serialize migrated config")?,
         );
 
-        fs::write(config_path, new_content)
-            .with_context(|| format!("Failed to write migrated config to {}", config_path.display()))?;
+        fs::write(config_path, new_content).with_context(|| {
+            format!(
+                "Failed to write migrated config to {}",
+                config_path.display()
+            )
+        })?;
 
         tracing::info!(
             "Config migration completed successfully: {}",
@@ -524,12 +526,12 @@ impl Config {
     fn config_to_toml_value(config: &Config) -> Result<Value> {
         let mut root = toml::map::Map::new();
 
-        let server_value = Value::try_from(&config.server)
-            .with_context(|| "Failed to serialize server config")?;
+        let server_value =
+            Value::try_from(&config.server).with_context(|| "Failed to serialize server config")?;
         root.insert("server".to_string(), server_value);
 
-        let models_value = Value::try_from(&config.models)
-            .with_context(|| "Failed to serialize model configs")?;
+        let models_value =
+            Value::try_from(&config.models).with_context(|| "Failed to serialize model configs")?;
         root.insert("model".to_string(), models_value);
 
         let workflow_json = config
@@ -579,7 +581,7 @@ impl Config {
             .collect()
     }
 
-    pub fn effective_timeouts_for_domain<'a>(&'a self, domain: Option<&str>) -> TimeoutConfig {
+    pub fn effective_timeouts_for_domain(&self, domain: Option<&str>) -> TimeoutConfig {
         if let Some(d) = domain {
             if let Some(ovr) = self.workflow.domains.get(d) {
                 return TimeoutConfig {

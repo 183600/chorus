@@ -1,16 +1,21 @@
 use crate::config::Config;
-use crate::workflow::WorkflowEngine;
+use crate::workflow::{WorkflowEngine, WorkflowExecutionDetails};
 use anyhow::Result;
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{IntoResponse, Response, sse::{Event, Sse}},
+    response::{
+        sse::{Event, Sse},
+        IntoResponse, Response,
+    },
     routing::{get, post},
     Json, Router,
 };
 use futures::stream;
+
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
 use std::convert::Infallible;
 use tower_http::cors::CorsLayer;
 
@@ -26,6 +31,7 @@ pub struct GenerateRequest {
     pub model: Option<String>,
     pub prompt: String,
     pub stream: Option<bool>,
+    pub include_workflow: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -33,6 +39,7 @@ pub struct ChatRequest {
     pub model: Option<String>,
     pub messages: Vec<Message>,
     pub stream: Option<bool>,
+    pub include_workflow: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,6 +54,8 @@ pub struct GenerateResponse {
     pub created_at: String,
     pub response: String,
     pub done: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<WorkflowExecutionDetails>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,11 +64,13 @@ pub struct ChatResponse {
     pub created_at: String,
     pub message: Message,
     pub done: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<WorkflowExecutionDetails>,
 }
 
 pub async fn start_server(config: Arc<Config>) -> Result<()> {
     let workflow_engine = WorkflowEngine::new((*config).clone());
-    
+
     let state = Arc::new(AppState {
         config: (*config).clone(),
         workflow_engine,
@@ -81,15 +92,12 @@ pub async fn start_server(config: Arc<Config>) -> Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let addr = format!(
-        "{}:{}",
-        config.server.host, config.server.port
-    );
+    let addr = format!("{}:{}", config.server.host, config.server.port);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    
+
     tracing::info!("Chorus server listening on http://{}", addr);
-    
+
     axum::serve(listener, app).await?;
 
     Ok(())
@@ -111,28 +119,48 @@ async fn generate(
         model,
         prompt,
         stream,
+        include_workflow,
     } = req;
 
-    tracing::info!("Received generate request, stream: {:?}", stream);
+    tracing::info!(
+        "Received generate request, stream: {:?}, include_workflow: {:?}",
+        stream,
+        include_workflow
+    );
 
-    let response_text = state.workflow_engine.process(prompt).await?;
     let model_name = model.unwrap_or_else(|| "chorus".to_string());
     let stream_enabled = stream.unwrap_or(false);
+    let include_workflow_details = include_workflow.unwrap_or(false);
+
+    let (response_text, workflow_details) = if include_workflow_details {
+        let result = state.workflow_engine.process_with_details(prompt).await?;
+        (result.final_response, Some(result.execution_details))
+    } else {
+        let response = state.workflow_engine.process(prompt).await?;
+        (response, None)
+    };
 
     if stream_enabled {
         let stream = stream::iter(vec![
-            Ok::<_, Infallible>(Event::default().json_data(serde_json::json!({
-                "model": model_name,
-                "created_at": chrono::Utc::now().to_rfc3339(),
-                "response": response_text,
-                "done": false,
-            })).unwrap()),
-            Ok(Event::default().json_data(serde_json::json!({
-                "model": model_name,
-                "created_at": chrono::Utc::now().to_rfc3339(),
-                "response": "",
-                "done": true,
-            })).unwrap()),
+            Ok::<_, Infallible>(
+                Event::default()
+                    .json_data(serde_json::json!({
+                        "model": model_name,
+                        "created_at": chrono::Utc::now().to_rfc3339(),
+                        "response": response_text,
+                        "done": false,
+                        "workflow": workflow_details,
+                    }))
+                    .unwrap(),
+            ),
+            Ok(Event::default()
+                .json_data(serde_json::json!({
+                    "model": model_name,
+                    "created_at": chrono::Utc::now().to_rfc3339(),
+                    "response": "",
+                    "done": true,
+                }))
+                .unwrap()),
         ]);
 
         Ok(Sse::new(stream).into_response())
@@ -142,6 +170,7 @@ async fn generate(
             created_at: chrono::Utc::now().to_rfc3339(),
             response: response_text,
             done: true,
+            workflow: workflow_details,
         })
         .into_response())
     }
@@ -151,9 +180,13 @@ async fn chat(
     State(state): State<SharedState>,
     Json(req): Json<ChatRequest>,
 ) -> Result<Response, AppError> {
-    tracing::info!("Received chat request with {} messages, stream: {:?}", req.messages.len(), req.stream);
+    tracing::info!(
+        "Received chat request with {} messages, stream: {:?}, include_workflow: {:?}",
+        req.messages.len(),
+        req.stream,
+        req.include_workflow
+    );
 
-    // 将消息转换为单个prompt
     let prompt = req
         .messages
         .iter()
@@ -161,35 +194,49 @@ async fn chat(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let response_text = state.workflow_engine.process(prompt).await?;
     let model_name = req.model.unwrap_or_else(|| "chorus".to_string());
+    let stream_enabled = req.stream.unwrap_or(false);
+    let include_workflow_details = req.include_workflow.unwrap_or(false);
 
-    // 如果请求流式响应
-    if req.stream.unwrap_or(false) {
+    let (response_text, workflow_details) = if include_workflow_details {
+        let result = state.workflow_engine.process_with_details(prompt).await?;
+        (result.final_response, Some(result.execution_details))
+    } else {
+        let response = state.workflow_engine.process(prompt).await?;
+        (response, None)
+    };
+
+    if stream_enabled {
         let stream = stream::iter(vec![
-            Ok::<_, Infallible>(Event::default().json_data(serde_json::json!({
-                "model": model_name,
-                "created_at": chrono::Utc::now().to_rfc3339(),
-                "message": {
-                    "role": "assistant",
-                    "content": response_text
-                },
-                "done": false,
-            })).unwrap()),
-            Ok(Event::default().json_data(serde_json::json!({
-                "model": model_name,
-                "created_at": chrono::Utc::now().to_rfc3339(),
-                "message": {
-                    "role": "assistant",
-                    "content": ""
-                },
-                "done": true,
-            })).unwrap()),
+            Ok::<_, Infallible>(
+                Event::default()
+                    .json_data(serde_json::json!({
+                        "model": model_name,
+                        "created_at": chrono::Utc::now().to_rfc3339(),
+                        "message": {
+                            "role": "assistant",
+                            "content": response_text
+                        },
+                        "done": false,
+                        "workflow": workflow_details,
+                    }))
+                    .unwrap(),
+            ),
+            Ok(Event::default()
+                .json_data(serde_json::json!({
+                    "model": model_name,
+                    "created_at": chrono::Utc::now().to_rfc3339(),
+                    "message": {
+                        "role": "assistant",
+                        "content": ""
+                    },
+                    "done": true,
+                }))
+                .unwrap()),
         ]);
-        
+
         Ok(Sse::new(stream).into_response())
     } else {
-        // 非流式响应
         Ok(Json(ChatResponse {
             model: model_name,
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -198,7 +245,9 @@ async fn chat(
                 content: response_text,
             },
             done: true,
-        }).into_response())
+            workflow: workflow_details,
+        })
+        .into_response())
     }
 }
 
@@ -220,52 +269,64 @@ async fn openai_chat_completions(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let response_text = state.workflow_engine.process(prompt).await?;
+    let (response_text, workflow_details) = if req.include_workflow.unwrap_or(false) {
+        let result = state.workflow_engine.process_with_details(prompt).await?;
+        (result.final_response, Some(result.execution_details))
+    } else {
+        let response = state.workflow_engine.process(prompt).await?;
+        (response, None)
+    };
     let model_name = req.model.unwrap_or_else(|| "chorus".to_string());
 
     let now = chrono::Utc::now();
     let created = now.timestamp();
+
     let id = format!("chatcmpl_{}", now.timestamp_millis());
 
     if req.stream.unwrap_or(false) {
         let stream = stream::iter(vec![
-            // send role delta first
-            Ok::<_, Infallible>(Event::default().json_data(serde_json::json!({
-                "id": id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model_name,
-                "choices": [ {
-                    "index": 0,
-                    "delta": { "role": "assistant" },
-                    "finish_reason": serde_json::Value::Null
-                } ]
-            })).unwrap()),
-            // send content delta
-            Ok(Event::default().json_data(serde_json::json!({
-                "id": id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model_name,
-                "choices": [ {
-                    "index": 0,
-                    "delta": { "content": response_text },
-                    "finish_reason": serde_json::Value::Null
-                } ]
-            })).unwrap()),
-            // send finish
-            Ok(Event::default().json_data(serde_json::json!({
-                "id": id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model_name,
-                "choices": [ {
-                    "index": 0,
-                    "delta": {},
-                    "finish_reason": "stop"
-                } ]
-            })).unwrap()),
-            // final sentinel
+            Ok::<_, Infallible>(
+                Event::default()
+                    .json_data(serde_json::json!({
+                        "id": id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model_name,
+                        "choices": [ {
+                            "index": 0,
+                            "delta": { "role": "assistant" },
+                            "finish_reason": serde_json::Value::Null
+                        } ],
+                        "workflow": workflow_details,
+                    }))
+                    .unwrap(),
+            ),
+            Ok(Event::default()
+                .json_data(serde_json::json!({
+                    "id": id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [ {
+                        "index": 0,
+                        "delta": { "content": response_text },
+                        "finish_reason": serde_json::Value::Null
+                    } ]
+                }))
+                .unwrap()),
+            Ok(Event::default()
+                .json_data(serde_json::json!({
+                    "id": id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [ {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop"
+                    } ]
+                }))
+                .unwrap()),
             Ok(Event::default().data("[DONE]")),
         ]);
 
@@ -283,7 +344,8 @@ async fn openai_chat_completions(
                     "content": response_text
                 },
                 "finish_reason": "stop"
-            } ]
+            } ],
+            "workflow": workflow_details,
         });
         Ok(Json(body).into_response())
     }
@@ -306,31 +368,40 @@ async fn responses(
         let mut out = String::new();
         for b in blocks {
             if let Some(s) = b.as_str() {
-                if !out.is_empty() { out.push_str("\n"); }
+                if !out.is_empty() {
+                    out.push('\n');
+                }
                 out.push_str(s);
                 continue;
             }
             if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
-                if !out.is_empty() { out.push_str("\n"); }
+                if !out.is_empty() {
+                    out.push('\n');
+                }
                 out.push_str(t);
                 continue;
             }
-            if let Some(t) = b
-                .get("content")
-                .and_then(|c| c.as_str())
-            {
-                if !out.is_empty() { out.push_str("\n"); }
+            if let Some(t) = b.get("content").and_then(|c| c.as_str()) {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
                 out.push_str(t);
                 continue;
             }
             if let Some(arr) = b.get("content").and_then(|c| c.as_array()) {
                 let part = arr
                     .iter()
-                    .filter_map(|p| p.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()))
+                    .filter_map(|p| {
+                        p.get("text")
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string())
+                    })
                     .collect::<Vec<_>>()
                     .join("\n");
                 if !part.is_empty() {
-                    if !out.is_empty() { out.push_str("\n"); }
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
                     out.push_str(&part);
                 }
             }
@@ -346,7 +417,9 @@ async fn responses(
                 parts.push(format!("{}: {}", role, s));
             } else if let Some(arr) = m.get("content").and_then(|c| c.as_array()) {
                 let text = build_from_blocks(arr);
-                if !text.is_empty() { parts.push(format!("{}: {}", role, text)); }
+                if !text.is_empty() {
+                    parts.push(format!("{}: {}", role, text));
+                }
             }
         }
         parts.join("\n")
@@ -365,10 +438,26 @@ async fn responses(
     };
 
     if prompt.trim().is_empty() {
-        return Err(AppError(anyhow::anyhow!("invalid request: missing input/messages/prompt")));
+        return Err(AppError(anyhow::anyhow!(
+            "invalid request: missing input/messages/prompt"
+        )));
     }
 
-    let response_text = state.workflow_engine.process(prompt).await?;
+    let include_workflow_details = req
+        .get("include_workflow")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let (response_text, workflow_details) = if include_workflow_details {
+        let result = state
+            .workflow_engine
+            .process_with_details(prompt.clone())
+            .await?;
+        (result.final_response, Some(result.execution_details))
+    } else {
+        let response = state.workflow_engine.process(prompt).await?;
+        (response, None)
+    };
 
     let now = chrono::Utc::now();
     let resp = serde_json::json!({
@@ -386,11 +475,11 @@ async fn responses(
             }
         ],
         "output_text": response_text,
+        "workflow": workflow_details,
     });
 
     Ok(Json(resp))
 }
-
 
 async fn list_models(State(state): State<SharedState>) -> impl IntoResponse {
     let models: Vec<_> = state
@@ -417,7 +506,7 @@ pub struct AppError(anyhow::Error);
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         tracing::error!("Application error: {:?}", self.0);
-        
+
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
