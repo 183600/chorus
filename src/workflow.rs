@@ -2,8 +2,45 @@ use crate::config::{Config, ModelConfig, WorkflowModelTarget, WorkflowPlan, Work
 use crate::llm::{parse_temperature_from_response, ChatMessage, LLMClient};
 use anyhow::{anyhow, Result};
 use async_recursion::async_recursion;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use url::Url;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowResult {
+    pub final_response: String,
+    pub execution_details: WorkflowExecutionDetails,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowExecutionDetails {
+    pub analyzer: AnalyzerDetails,
+    pub workers: Vec<WorkerDetails>,
+    pub synthesizer: SynthesizerDetails,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalyzerDetails {
+    pub model: String,
+    pub temperature: f32,
+    pub auto_temperature: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerDetails {
+    pub name: String,
+    pub temperature: Option<f32>,
+    pub response: Option<String>,
+    pub success: bool,
+    pub error: Option<String>,
+    pub nested: Option<Box<WorkflowExecutionDetails>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SynthesizerDetails {
+    pub model: String,
+    pub temperature: f32,
+}
 
 pub struct WorkflowEngine {
     config: Config,
@@ -13,7 +50,10 @@ pub struct WorkflowEngine {
 impl WorkflowEngine {
     pub fn new(config: Config) -> Self {
         let model_configs = config.build_model_map();
-        Self { config, model_configs }
+        Self {
+            config,
+            model_configs,
+        }
     }
 
     pub async fn process(&self, prompt: String) -> Result<String> {
@@ -21,17 +61,45 @@ impl WorkflowEngine {
             .await
     }
 
+    pub async fn process_with_details(&self, prompt: String) -> Result<WorkflowResult> {
+        self.run_plan_with_details(&self.config.workflow_integration, &prompt, 0)
+            .await
+    }
+
     #[async_recursion]
-    async fn run_plan(&self, plan: &WorkflowPlan, prompt: &str, depth: usize) -> Result<String> {
+    async fn run_plan_with_details(
+        &self,
+        plan: &WorkflowPlan,
+        prompt: &str,
+        depth: usize,
+    ) -> Result<WorkflowResult> {
         if depth == 0 {
-            tracing::info!("Starting workflow processing");
+            tracing::info!("Starting workflow processing with details");
         } else {
-            tracing::debug!("Starting nested workflow at depth {} ({})", depth, plan.label());
+            tracing::debug!(
+                "Starting nested workflow at depth {} ({})",
+                depth,
+                plan.label()
+            );
         }
+
+        let target = &plan.analyzer;
+        let model_config = self.lookup_model(&target.model)?;
+
+        let auto_temperature = target
+            .auto_temperature
+            .or(model_config.auto_temperature)
+            .unwrap_or(false);
 
         let temperature = self
             .resolve_analyzer_temperature(plan, prompt, depth)
             .await?;
+
+        let analyzer_details = AnalyzerDetails {
+            model: target.model.clone(),
+            temperature,
+            auto_temperature,
+        };
 
         if depth == 0 {
             tracing::info!("Step 1 completed - Temperature: {}", temperature);
@@ -43,22 +111,46 @@ impl WorkflowEngine {
             );
         }
 
-        let worker_responses = self
-            .run_workers(plan, prompt, temperature, depth)
+        let worker_details = self
+            .run_workers_with_details(plan, prompt, temperature, depth)
             .await?;
 
         if depth == 0 {
             tracing::info!(
                 "Step 2 completed - Collected {} worker responses",
-                worker_responses.len()
+                worker_details.iter().filter(|w| w.success).count()
             );
         } else {
             tracing::debug!(
                 "Nested workflow depth {} collected {} worker responses",
                 depth,
-                worker_responses.len()
+                worker_details.iter().filter(|w| w.success).count()
             );
         }
+
+        let worker_responses: Vec<(String, String)> = worker_details
+            .iter()
+            .filter_map(|w| {
+                if w.success {
+                    w.response.as_ref().map(|r| (w.name.clone(), r.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let synthesizer_target = &plan.synthesizer;
+        let synthesizer_model_config = self.lookup_model(&synthesizer_target.model)?;
+        let synthesizer_temperature = self.resolve_synthesizer_temperature(
+            synthesizer_target,
+            synthesizer_model_config,
+            depth,
+        );
+
+        let synthesizer_details = SynthesizerDetails {
+            model: synthesizer_target.model.clone(),
+            temperature: synthesizer_temperature,
+        };
 
         let final_response = self
             .call_synthesizer(plan, prompt, &worker_responses, depth)
@@ -73,7 +165,19 @@ impl WorkflowEngine {
             );
         }
 
-        Ok(final_response)
+        Ok(WorkflowResult {
+            final_response,
+            execution_details: WorkflowExecutionDetails {
+                analyzer: analyzer_details,
+                workers: worker_details,
+                synthesizer: synthesizer_details,
+            },
+        })
+    }
+
+    async fn run_plan(&self, plan: &WorkflowPlan, prompt: &str, depth: usize) -> Result<String> {
+        let result = self.run_plan_with_details(plan, prompt, depth).await?;
+        Ok(result.final_response)
     }
 
     async fn resolve_analyzer_temperature(
@@ -130,9 +234,7 @@ impl WorkflowEngine {
         }
 
         let domain = extract_domain_from_url(&model_config.api_base);
-        let timeouts = self
-            .config
-            .effective_timeouts_for_domain(domain.as_deref());
+        let timeouts = self.config.effective_timeouts_for_domain(domain.as_deref());
         let client = LLMClient::new(
             model_config.api_base.clone(),
             model_config.api_key.clone(),
@@ -175,7 +277,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
         Ok(temperature)
     }
 
-    #[async_recursion]
+    #[allow(dead_code)]
     async fn run_workers(
         &self,
         plan: &WorkflowPlan,
@@ -183,6 +285,30 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
         base_temperature: f32,
         depth: usize,
     ) -> Result<Vec<(String, String)>> {
+        let details = self
+            .run_workers_with_details(plan, prompt, base_temperature, depth)
+            .await?;
+        let responses = details
+            .into_iter()
+            .filter_map(|worker| {
+                if worker.success {
+                    worker.response.map(|resp| (worker.name, resp))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        Ok(responses)
+    }
+
+    #[async_recursion]
+    async fn run_workers_with_details(
+        &self,
+        plan: &WorkflowPlan,
+        prompt: &str,
+        base_temperature: f32,
+        depth: usize,
+    ) -> Result<Vec<WorkerDetails>> {
         let plan_label = plan.label();
 
         if plan.workers.is_empty() {
@@ -198,16 +324,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
             ));
         }
 
-        let mut responses = Vec::new();
-        let mut worker_errors: Vec<String> = Vec::new();
-        let normalize_error = |input: &str| -> String {
-            let sanitized = input.split_whitespace().collect::<Vec<_>>().join(" ");
-            if sanitized.is_empty() {
-                "<unknown error>".to_string()
-            } else {
-                sanitized
-            }
-        };
+        let mut worker_details = Vec::new();
 
         for worker in &plan.workers {
             match worker {
@@ -215,24 +332,45 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
                     if depth == 0 {
                         tracing::info!("Calling worker model: {}", target.model);
                     } else {
-                        tracing::debug!(
-                            "Calling worker model {} at depth {}",
-                            target.model,
-                            depth
-                        );
+                        tracing::debug!("Calling worker model {} at depth {}", target.model, depth);
                     }
+
+                    let temperature = if let Ok(model_config) = self.lookup_model(&target.model) {
+                        self.resolve_worker_temperature(target, model_config, base_temperature)
+                    } else {
+                        let err = self.lookup_model(&target.model);
+                        let err_display = err.expect_err("lookup should have failed").to_string();
+                        tracing::warn!(
+                            worker = %target.model,
+                            depth,
+                            error = %err_display,
+                            "Worker lookup failed"
+                        );
+                        worker_details.push(WorkerDetails {
+                            name: target.model.clone(),
+                            temperature: None,
+                            response: None,
+                            success: false,
+                            error: Some(err_display),
+                            nested: None,
+                        });
+                        continue;
+                    };
 
                     match self
                         .call_worker_model(target, prompt, base_temperature, depth)
                         .await
                     {
                         Ok(response) => {
-                            tracing::debug!(
-                                "Worker {} succeeded at depth {}",
-                                target.model,
-                                depth
-                            );
-                            responses.push((target.model.clone(), response));
+                            tracing::debug!("Worker {} succeeded at depth {}", target.model, depth);
+                            worker_details.push(WorkerDetails {
+                                name: target.model.clone(),
+                                temperature: Some(temperature),
+                                response: Some(response),
+                                success: true,
+                                error: None,
+                                nested: None,
+                            });
                         }
                         Err(err) => {
                             let err_display = err.to_string();
@@ -242,8 +380,14 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
                                 error = %err_display,
                                 "Worker call failed"
                             );
-                            let detail = normalize_error(&err_display);
-                            worker_errors.push(format!("{}: {}", target.model, detail));
+                            worker_details.push(WorkerDetails {
+                                name: target.model.clone(),
+                                temperature: Some(temperature),
+                                response: None,
+                                success: false,
+                                error: Some(err_display),
+                                nested: None,
+                            });
                         }
                     }
                 }
@@ -259,14 +403,24 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
                         );
                     }
 
-                    match self.run_plan(sub_plan, prompt, depth + 1).await {
-                        Ok(response) => {
+                    match self
+                        .run_plan_with_details(sub_plan, prompt, depth + 1)
+                        .await
+                    {
+                        Ok(result) => {
                             tracing::debug!(
                                 "Nested workflow {} succeeded at depth {}",
                                 label,
                                 depth
                             );
-                            responses.push((label, response));
+                            worker_details.push(WorkerDetails {
+                                name: label.clone(),
+                                temperature: None,
+                                response: Some(result.final_response),
+                                success: true,
+                                error: None,
+                                nested: Some(Box::new(result.execution_details)),
+                            });
                         }
                         Err(err) => {
                             let err_display = err.to_string();
@@ -276,19 +430,29 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
                                 error = %err_display,
                                 "Nested workflow failed"
                             );
-                            let detail = normalize_error(&err_display);
-                            worker_errors.push(format!("{}: {}", label, detail));
+                            worker_details.push(WorkerDetails {
+                                name: label,
+                                temperature: None,
+                                response: None,
+                                success: false,
+                                error: Some(err_display),
+                                nested: None,
+                            });
                         }
                     }
                 }
             }
         }
 
-        if responses.is_empty() {
+        if worker_details.iter().filter(|w| w.success).count() == 0 {
+            let worker_errors: Vec<String> = worker_details
+                .iter()
+                .filter_map(|w| w.error.as_ref().map(|e| format!("{}: {}", w.name, e)))
+                .collect();
+
             let mut message = format!(
                 "All worker nodes failed at depth {} for plan {}",
-                depth,
-                plan_label
+                depth, plan_label
             );
             if !worker_errors.is_empty() {
                 message.push_str(". Worker errors: ");
@@ -303,7 +467,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
             return Err(anyhow!(message));
         }
 
-        Ok(responses)
+        Ok(worker_details)
     }
 
     async fn call_worker_model(
@@ -316,9 +480,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
         let model_config = self.lookup_model(&target.model)?;
 
         let domain = extract_domain_from_url(&model_config.api_base);
-        let timeouts = self
-            .config
-            .effective_timeouts_for_domain(domain.as_deref());
+        let timeouts = self.config.effective_timeouts_for_domain(domain.as_deref());
         let client = LLMClient::new(
             model_config.api_base.clone(),
             model_config.api_key.clone(),
@@ -363,9 +525,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
         let model_config = self.lookup_model(&target.model)?;
 
         let domain = extract_domain_from_url(&model_config.api_base);
-        let timeouts = self
-            .config
-            .effective_timeouts_for_domain(domain.as_deref());
+        let timeouts = self.config.effective_timeouts_for_domain(domain.as_deref());
         let client = LLMClient::new(
             model_config.api_base.clone(),
             model_config.api_key.clone(),
@@ -378,12 +538,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
         );
 
         for (i, (label, response)) in worker_responses.iter().enumerate() {
-            synthesis_prompt.push_str(&format!(
-                "【模型{}：{}】\n{}\n\n",
-                i + 1,
-                label,
-                response
-            ));
+            synthesis_prompt.push_str(&format!("【模型{}：{}】\n{}\n\n", i + 1, label, response));
         }
 
         synthesis_prompt.push_str(
@@ -456,7 +611,10 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
 
     fn lookup_model(&self, name: &str) -> Result<&ModelConfig> {
         self.model_configs.get(name).ok_or_else(|| {
-            anyhow!("Model '{}' not found in configuration. Did you define it under [[model]]?", name)
+            anyhow!(
+                "Model '{}' not found in configuration. Did you define it under [[model]]?",
+                name
+            )
         })
     }
 }

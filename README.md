@@ -304,7 +304,8 @@ curl -H 'Content-Type: application/json' \
 |------|------|------|------|
 | `model` | string | 否 | 模型名称（默认: "chorus"） |
 | `prompt` | string | 是 | 用户提示词 |
-| `stream` | boolean | 否 | 是否流式返回（暂不支持） |
+| `stream` | boolean | 否 | 是否使用 Server-Sent Events 流式返回（默认: false） |
+| `include_workflow` | boolean | 否 | 是否在响应中返回工作流执行详情（默认: false） |
 
 **响应（使用示例配置运行时会返回 mock 数据）**
 
@@ -317,6 +318,37 @@ curl -H 'Content-Type: application/json' \
 }
 ```
 > 提示：使用真实 API Key 时，这里会返回实际模型的回答。
+
+若请求体中将 `"include_workflow": true`，响应会包含一个 `workflow` 字段，描述分析器、工作节点和综合器的执行详情。例如：
+
+```json
+{
+  "model": "chorus",
+  "created_at": "2025-10-20T13:23:23.284964394+00:00",
+  "response": "mock reply",
+  "done": true,
+  "workflow": {
+    "analyzer": {
+      "model": "glm-4.6",
+      "temperature": 1.2,
+      "auto_temperature": true
+    },
+    "workers": [
+      {
+        "name": "glm-4.6",
+        "temperature": 1.2,
+        "response": "mock worker reply",
+        "success": true,
+        "error": null
+      }
+    ],
+    "synthesizer": {
+      "model": "glm-4.6",
+      "temperature": 1.2
+    }
+  }
+}
+```
 
 ### 2. 聊天接口（Chat API）
 
@@ -338,13 +370,31 @@ curl -H 'Content-Type: application/json' \
   }'
 ```
 
+**返回工作流详情的请求**
+
+```bash
+curl -H 'Content-Type: application/json' \
+  http://localhost:11435/api/chat \
+  -d '{
+    "model": "chorus",
+    "messages": [
+      {
+        "role": "user",
+        "content": "你好"
+      }
+    ],
+    "include_workflow": true
+  }'
+```
+
 **参数**
 
 | 参数 | 类型 | 必需 | 描述 |
 |------|------|------|------|
 | `model` | string | 否 | 模型名称 |
 | `messages` | array | 是 | 消息历史数组 |
-| `stream` | boolean | 否 | 是否流式返回 |
+| `stream` | boolean | 否 | 是否使用 Server-Sent Events 流式返回（默认: false） |
+| `include_workflow` | boolean | 否 | 是否在响应中返回工作流执行详情（默认: false） |
 
 **响应（示例配置下的 mock 数据）**
 

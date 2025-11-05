@@ -73,7 +73,10 @@ impl LLMClient {
         });
 
         tracing::debug!("Calling LLM API: {} with model: {}", url, model);
-        tracing::debug!("Request body: {}", serde_json::to_string_pretty(&request_body)?);
+        tracing::debug!(
+            "Request body: {}",
+            serde_json::to_string_pretty(&request_body)?
+        );
 
         let response = self
             .client
@@ -192,28 +195,19 @@ impl LLMClient {
             ));
         }
 
-        Err(anyhow!(
-            "LLM response missing content field: {}",
-            v
-        ))
+        Err(anyhow!("LLM response missing content field: {}", v))
     }
 }
 
 fn detect_provider_error(value: &serde_json::Value) -> Option<String> {
     if let Some(error_val) = value.get("error") {
         if let Some(obj) = error_val.as_object() {
-            let message = [
-                "message",
-                "msg",
-                "error_message",
-                "error_msg",
-                "detail",
-            ]
-            .iter()
-            .filter_map(|key| obj.get(*key))
-            .filter_map(json_value_to_string)
-            .map(|s| s.trim().to_string())
-            .find(|s| !s.is_empty());
+            let message = ["message", "msg", "error_message", "error_msg", "detail"]
+                .iter()
+                .filter_map(|key| obj.get(*key))
+                .filter_map(json_value_to_string)
+                .map(|s| s.trim().to_string())
+                .find(|s| !s.is_empty());
             let code = ["code", "status", "type"]
                 .iter()
                 .filter_map(|key| obj.get(*key))
@@ -241,7 +235,14 @@ fn detect_provider_error(value: &serde_json::Value) -> Option<String> {
         if let Some(status_str) = interpret_status_like_error(status_val) {
             let message = extract_message_fields(
                 value,
-                &["msg", "message", "error_message", "error_msg", "cause", "detail"],
+                &[
+                    "msg",
+                    "message",
+                    "error_message",
+                    "error_msg",
+                    "cause",
+                    "detail",
+                ],
             );
             return Some(match message {
                 Some(msg) => format!("status {}: {}", status_str, msg),
@@ -254,7 +255,14 @@ fn detect_provider_error(value: &serde_json::Value) -> Option<String> {
         if let Some(code_str) = interpret_status_like_error(code_val) {
             let message = extract_message_fields(
                 value,
-                &["message", "msg", "error_message", "error_msg", "cause", "detail"],
+                &[
+                    "message",
+                    "msg",
+                    "error_message",
+                    "error_msg",
+                    "cause",
+                    "detail",
+                ],
             );
             return Some(match message {
                 Some(msg) => format!("code {}: {}", code_str, msg),
@@ -412,7 +420,7 @@ pub fn parse_temperature_from_response(response: &str) -> f32 {
 
     for line in response.lines() {
         if line.to_lowercase().contains("temperature") {
-            if let Some(value_part) = line.splitn(2, ':').nth(1) {
+            if let Some(value_part) = line.split_once(':').map(|x| x.1) {
                 if let Some(value) = parse_numeric_fragment(value_part) {
                     return clamp_temperature(value);
                 }
@@ -465,7 +473,6 @@ fn parse_numeric_fragment(input: &str) -> Option<f32> {
 fn clamp_temperature(value: f32) -> f32 {
     value.clamp(0.0, 2.0)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -533,5 +540,4 @@ mod tests {
         });
         assert!(detect_provider_error(&value).is_none());
     }
-
 }
