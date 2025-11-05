@@ -106,18 +106,45 @@ async fn health_check() -> impl IntoResponse {
 async fn generate(
     State(state): State<SharedState>,
     Json(req): Json<GenerateRequest>,
-) -> Result<Json<GenerateResponse>, AppError> {
-    tracing::info!("Received generate request");
-    let response = state.workflow_engine.process(req.prompt).await?;
+) -> Result<Response, AppError> {
+    let GenerateRequest {
+        model,
+        prompt,
+        stream,
+    } = req;
 
-    let model_name = req.model.unwrap_or_else(|| "chorus".to_string());
+    tracing::info!("Received generate request, stream: {:?}", stream);
 
-    Ok(Json(GenerateResponse {
-        model: model_name,
-        created_at: chrono::Utc::now().to_rfc3339(),
-        response,
-        done: true,
-    }))
+    let response_text = state.workflow_engine.process(prompt).await?;
+    let model_name = model.unwrap_or_else(|| "chorus".to_string());
+    let stream_enabled = stream.unwrap_or(false);
+
+    if stream_enabled {
+        let stream = stream::iter(vec![
+            Ok::<_, Infallible>(Event::default().json_data(serde_json::json!({
+                "model": model_name,
+                "created_at": chrono::Utc::now().to_rfc3339(),
+                "response": response_text,
+                "done": false,
+            })).unwrap()),
+            Ok(Event::default().json_data(serde_json::json!({
+                "model": model_name,
+                "created_at": chrono::Utc::now().to_rfc3339(),
+                "response": "",
+                "done": true,
+            })).unwrap()),
+        ]);
+
+        Ok(Sse::new(stream).into_response())
+    } else {
+        Ok(Json(GenerateResponse {
+            model: model_name,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            response: response_text,
+            done: true,
+        })
+        .into_response())
+    }
 }
 
 async fn chat(
