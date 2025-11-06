@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use url::Url;
 
+const DEFAULT_TEMPERATURE: f32 = 1.4;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowResult {
     pub final_response: String,
@@ -112,7 +114,7 @@ impl WorkflowEngine {
         }
 
         let worker_details = self
-            .run_workers_with_details(plan, prompt, temperature, depth)
+            .run_workers_with_details(plan, prompt, temperature, auto_temperature, depth)
             .await?;
 
         if depth == 0 {
@@ -209,14 +211,18 @@ impl WorkflowEngine {
 
         if !auto {
             if depth == 0 {
-                tracing::info!("Analyzer auto temperature disabled, using default: 1.4");
+                tracing::info!(
+                    "Analyzer auto temperature disabled, using default: {}",
+                    DEFAULT_TEMPERATURE
+                );
             } else {
                 tracing::debug!(
-                    "Depth {} analyzer auto temperature disabled, using default 1.4",
-                    depth
+                    "Depth {} analyzer auto temperature disabled, using default {}",
+                    depth,
+                    DEFAULT_TEMPERATURE
                 );
             }
-            return Ok(1.4);
+            return Ok(DEFAULT_TEMPERATURE);
         }
 
         if depth == 0 {
@@ -285,8 +291,15 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
         base_temperature: f32,
         depth: usize,
     ) -> Result<Vec<(String, String)>> {
+        let analyzer_target = &plan.analyzer;
+        let analyzer_model_config = self.lookup_model(&analyzer_target.model)?;
+        let analyzer_auto = analyzer_target
+            .auto_temperature
+            .or(analyzer_model_config.auto_temperature)
+            .unwrap_or(false);
+
         let details = self
-            .run_workers_with_details(plan, prompt, base_temperature, depth)
+            .run_workers_with_details(plan, prompt, base_temperature, analyzer_auto, depth)
             .await?;
         let responses = details
             .into_iter()
@@ -307,6 +320,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
         plan: &WorkflowPlan,
         prompt: &str,
         base_temperature: f32,
+        analyzer_auto: bool,
         depth: usize,
     ) -> Result<Vec<WorkerDetails>> {
         let plan_label = plan.label();
@@ -336,7 +350,12 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
                     }
 
                     let temperature = if let Ok(model_config) = self.lookup_model(&target.model) {
-                        self.resolve_worker_temperature(target, model_config, base_temperature)
+                        self.resolve_worker_temperature(
+                            target,
+                            model_config,
+                            base_temperature,
+                            analyzer_auto,
+                        )
                     } else {
                         let err = self.lookup_model(&target.model);
                         let err_display = err.expect_err("lookup should have failed").to_string();
@@ -358,7 +377,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
                     };
 
                     match self
-                        .call_worker_model(target, prompt, base_temperature, depth)
+                        .call_worker_model(target, prompt, base_temperature, analyzer_auto, depth)
                         .await
                     {
                         Ok(response) => {
@@ -475,6 +494,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
         target: &WorkflowModelTarget,
         prompt: &str,
         base_temperature: f32,
+        analyzer_auto: bool,
         depth: usize,
     ) -> Result<String> {
         let model_config = self.lookup_model(&target.model)?;
@@ -492,7 +512,12 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
             content: prompt.to_string(),
         }];
 
-        let temperature = self.resolve_worker_temperature(target, model_config, base_temperature);
+        let temperature = self.resolve_worker_temperature(
+            target,
+            model_config,
+            base_temperature,
+            analyzer_auto,
+        );
 
         tracing::debug!(
             "Using temperature {} for worker {} at depth {}",
@@ -575,6 +600,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
         target: &WorkflowModelTarget,
         model_config: &ModelConfig,
         base_temperature: f32,
+        analyzer_auto: bool,
     ) -> f32 {
         if let Some(t) = target.temperature {
             return t;
@@ -582,7 +608,27 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
         if let Some(t) = model_config.temperature {
             return t;
         }
-        base_temperature
+
+        let auto_enabled = target
+            .auto_temperature
+            .or(model_config.auto_temperature)
+            .unwrap_or(analyzer_auto);
+
+        if auto_enabled {
+            tracing::debug!(
+                "Worker {} auto temperature enabled, using analyzer recommendation {}",
+                target.model,
+                base_temperature
+            );
+            base_temperature
+        } else {
+            tracing::debug!(
+                "Worker {} auto temperature disabled, using default {}",
+                target.model,
+                DEFAULT_TEMPERATURE
+            );
+            DEFAULT_TEMPERATURE
+        }
     }
 
     fn resolve_synthesizer_temperature(
@@ -601,12 +647,13 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
             || matches!(model_config.auto_temperature, Some(true))
         {
             tracing::debug!(
-                "Synthesizer {} requested auto temperature at depth {}, defaulting to 1.4",
+                "Synthesizer {} requested auto temperature at depth {}, defaulting to {}",
                 target.model,
-                depth
+                depth,
+                DEFAULT_TEMPERATURE
             );
         }
-        1.4
+        DEFAULT_TEMPERATURE
     }
 
     fn lookup_model(&self, name: &str) -> Result<&ModelConfig> {
@@ -669,6 +716,139 @@ mod tests {
                 domains: HashMap::new(),
             },
         }
+    }
+
+    #[test]
+    fn worker_auto_temperature_disabled_falls_back_to_default() {
+        let mut config = build_test_config_with_workers(Vec::new());
+        config.models[0].temperature = None;
+        config.models[0].auto_temperature = None;
+
+        let engine = WorkflowEngine::new(config);
+        let target = WorkflowModelTarget {
+            model: "primary".to_string(),
+            temperature: None,
+            auto_temperature: None,
+        };
+
+        let resolved = {
+            let model_config = engine.lookup_model(&target.model).unwrap();
+            engine.resolve_worker_temperature(&target, model_config, 0.9, false)
+        };
+
+        assert!(
+            (resolved - DEFAULT_TEMPERATURE).abs() < f32::EPSILON,
+            "expected default temperature {}, got {}",
+            DEFAULT_TEMPERATURE,
+            resolved
+        );
+    }
+
+    #[test]
+    fn worker_auto_temperature_flag_enables_analyzer_reuse() {
+        let mut config = build_test_config_with_workers(Vec::new());
+        config.models[0].temperature = None;
+        config.models[0].auto_temperature = None;
+
+        let engine = WorkflowEngine::new(config);
+        let target = WorkflowModelTarget {
+            model: "primary".to_string(),
+            temperature: None,
+            auto_temperature: Some(true),
+        };
+        let base = 0.42;
+
+        let resolved = {
+            let model_config = engine.lookup_model(&target.model).unwrap();
+            engine.resolve_worker_temperature(&target, model_config, base, false)
+        };
+
+        assert!(
+            (resolved - base).abs() < f32::EPSILON,
+            "expected analyzer temperature {}, got {}",
+            base,
+            resolved
+        );
+    }
+
+    #[test]
+    fn worker_inherits_analyzer_auto_when_unspecified() {
+        let mut config = build_test_config_with_workers(Vec::new());
+        config.models[0].temperature = None;
+        config.models[0].auto_temperature = None;
+
+        let engine = WorkflowEngine::new(config);
+        let target = WorkflowModelTarget {
+            model: "primary".to_string(),
+            temperature: None,
+            auto_temperature: None,
+        };
+        let base = 0.73;
+
+        let resolved = {
+            let model_config = engine.lookup_model(&target.model).unwrap();
+            engine.resolve_worker_temperature(&target, model_config, base, true)
+        };
+
+        assert!(
+            (resolved - base).abs() < f32::EPSILON,
+            "expected analyzer temperature {}, got {}",
+            base,
+            resolved
+        );
+    }
+
+    #[test]
+    fn worker_explicit_auto_false_overrides_analyzer_auto() {
+        let mut config = build_test_config_with_workers(Vec::new());
+        config.models[0].temperature = None;
+        config.models[0].auto_temperature = None;
+
+        let engine = WorkflowEngine::new(config);
+        let target = WorkflowModelTarget {
+            model: "primary".to_string(),
+            temperature: None,
+            auto_temperature: Some(false),
+        };
+
+        let resolved = {
+            let model_config = engine.lookup_model(&target.model).unwrap();
+            engine.resolve_worker_temperature(&target, model_config, 0.81, true)
+        };
+
+        assert!(
+            (resolved - DEFAULT_TEMPERATURE).abs() < f32::EPSILON,
+            "expected default temperature {}, got {}",
+            DEFAULT_TEMPERATURE,
+            resolved
+        );
+    }
+
+    #[test]
+    fn worker_uses_model_config_auto_flag() {
+        let mut config = build_test_config_with_workers(Vec::new());
+        config.models[0].temperature = None;
+        config.models[0].auto_temperature = Some(true);
+
+        let engine = WorkflowEngine::new(config);
+        let target = WorkflowModelTarget {
+            model: "primary".to_string(),
+            temperature: None,
+            auto_temperature: None,
+        };
+        let base = 0.37;
+
+        let resolved = {
+            let model_config = engine.lookup_model(&target.model).unwrap();
+            engine.resolve_worker_temperature(&target, model_config, base, false)
+        };
+
+        assert!(
+            (resolved - base).abs() < f32::EPSILON,
+            "expected analyzer temperature {}, got {}",
+            base,
+            resolved
+        );
     }
 
     #[tokio::test]
