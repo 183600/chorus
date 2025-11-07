@@ -21,6 +21,8 @@ use tower_http::cors::CorsLayer;
 
 type SharedState = Arc<AppState>;
 
+const STREAM_CHUNK_SIZE: usize = 120;
+
 pub struct AppState {
     config: Config,
     workflow_engine: WorkflowEngine,
@@ -48,6 +50,30 @@ pub struct Message {
     pub content: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum PromptInput {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+impl PromptInput {
+    fn into_prompt(self) -> String {
+        match self {
+            PromptInput::Single(s) => s,
+            PromptInput::Multiple(items) => items.join("\n"),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CompletionRequest {
+    pub model: Option<String>,
+    pub prompt: PromptInput,
+    pub stream: Option<bool>,
+    pub include_workflow: Option<bool>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GenerateResponse {
     pub model: String,
@@ -68,6 +94,68 @@ pub struct ChatResponse {
     pub workflow: Option<WorkflowExecutionDetails>,
 }
 
+fn chunk_text(content: &str, max_len: usize) -> Vec<String> {
+    if content.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_len = 0usize;
+
+    for ch in content.chars() {
+        current_len += ch.len_utf8();
+        current.push(ch);
+
+        if ch == '\n' || current_len >= max_len {
+            chunks.push(current);
+            current = String::new();
+            current_len = 0;
+        }
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    chunks
+}
+
+fn build_prompt_from_messages(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .map(|m| format!("{}: {}", m.role, m.content))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn execute_workflow(
+    state: &AppState,
+    prompt: String,
+    include_workflow: bool,
+) -> Result<(String, Option<WorkflowExecutionDetails>), AppError> {
+    if include_workflow {
+        let result = state.workflow_engine.process_with_details(prompt).await?;
+        Ok((result.final_response, Some(result.execution_details)))
+    } else {
+        let response = state.workflow_engine.process(prompt).await?;
+        Ok((response, None))
+    }
+}
+
+fn insert_workflow_field(
+    payload: &mut serde_json::Value,
+    details: &Option<WorkflowExecutionDetails>,
+) {
+    if let Some(details) = details {
+        if let serde_json::Value::Object(map) = payload {
+            if let Ok(value) = serde_json::to_value(details) {
+                map.insert("workflow".to_string(), value);
+            }
+        }
+    }
+}
+
 pub async fn start_server(config: Arc<Config>) -> Result<()> {
     let workflow_engine = WorkflowEngine::new((*config).clone());
 
@@ -85,8 +173,10 @@ pub async fn start_server(config: Arc<Config>) -> Result<()> {
         // API v1 alias (same handlers)
         .route("/v1/generate", post(generate))
         .route("/v1/chat", post(chat))
-        // OpenAI-compatible Chat Completions (for Cherry Studio)
+        // OpenAI-compatible endpoints (for Cherry Studio and similar clients)
         .route("/v1/chat/completions", post(openai_chat_completions))
+        .route("/v1/completions", post(openai_completions))
+        .route("/v1/models", get(list_models_openai))
         .route("/v1/tags", get(list_models))
         .route("/v1/responses", post(responses))
         .layer(CorsLayer::permissive())
@@ -132,48 +222,50 @@ async fn generate(
     let stream_enabled = stream.unwrap_or(false);
     let include_workflow_details = include_workflow.unwrap_or(false);
 
-    let (response_text, workflow_details) = if include_workflow_details {
-        let result = state.workflow_engine.process_with_details(prompt).await?;
-        (result.final_response, Some(result.execution_details))
-    } else {
-        let response = state.workflow_engine.process(prompt).await?;
-        (response, None)
-    };
+    let (response_text, workflow_details) =
+        execute_workflow(&state, prompt, include_workflow_details).await?;
 
     if stream_enabled {
-        let stream = stream::iter(vec![
-            Ok::<_, Infallible>(
-                Event::default()
-                    .json_data(serde_json::json!({
-                        "model": model_name,
-                        "created_at": chrono::Utc::now().to_rfc3339(),
-                        "response": response_text,
-                        "done": false,
-                        "workflow": workflow_details,
-                    }))
-                    .unwrap(),
-            ),
-            Ok(Event::default()
-                .json_data(serde_json::json!({
-                    "model": model_name,
-                    "created_at": chrono::Utc::now().to_rfc3339(),
-                    "response": "",
-                    "done": true,
-                }))
-                .unwrap()),
-        ]);
+        let workflow_for_events = workflow_details.clone();
+        let mut events: Vec<Result<Event, Infallible>> = Vec::new();
+        let created_at = chrono::Utc::now().to_rfc3339();
 
-        Ok(Sse::new(stream).into_response())
-    } else {
-        Ok(Json(GenerateResponse {
-            model: model_name,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            response: response_text,
-            done: true,
-            workflow: workflow_details,
-        })
-        .into_response())
+        for (idx, chunk) in chunk_text(&response_text, STREAM_CHUNK_SIZE)
+            .into_iter()
+            .enumerate()
+        {
+            let mut payload = serde_json::json!({
+                "model": &model_name,
+                "created_at": &created_at,
+                "response": chunk,
+                "done": false,
+            });
+            if idx == 0 {
+                insert_workflow_field(&mut payload, &workflow_for_events);
+            }
+            events.push(Ok(Event::default().json_data(payload).unwrap()));
+        }
+
+        events.push(Ok(Event::default()
+            .json_data(serde_json::json!({
+                "model": &model_name,
+                "created_at": &created_at,
+                "response": "",
+                "done": true,
+            }))
+            .unwrap()));
+
+        return Ok(Sse::new(stream::iter(events)).into_response());
     }
+
+    Ok(Json(GenerateResponse {
+        model: model_name,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        response: response_text,
+        done: true,
+        workflow: workflow_details,
+    })
+    .into_response())
 }
 
 async fn chat(
@@ -187,68 +279,65 @@ async fn chat(
         req.include_workflow
     );
 
-    let prompt = req
-        .messages
-        .iter()
-        .map(|m| format!("{}: {}", m.role, m.content))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let prompt = build_prompt_from_messages(&req.messages);
 
     let model_name = req.model.unwrap_or_else(|| "chorus".to_string());
     let stream_enabled = req.stream.unwrap_or(false);
     let include_workflow_details = req.include_workflow.unwrap_or(false);
 
-    let (response_text, workflow_details) = if include_workflow_details {
-        let result = state.workflow_engine.process_with_details(prompt).await?;
-        (result.final_response, Some(result.execution_details))
-    } else {
-        let response = state.workflow_engine.process(prompt).await?;
-        (response, None)
-    };
+    let (response_text, workflow_details) =
+        execute_workflow(&state, prompt, include_workflow_details).await?;
 
     if stream_enabled {
-        let stream = stream::iter(vec![
-            Ok::<_, Infallible>(
-                Event::default()
-                    .json_data(serde_json::json!({
-                        "model": model_name,
-                        "created_at": chrono::Utc::now().to_rfc3339(),
-                        "message": {
-                            "role": "assistant",
-                            "content": response_text
-                        },
-                        "done": false,
-                        "workflow": workflow_details,
-                    }))
-                    .unwrap(),
-            ),
-            Ok(Event::default()
-                .json_data(serde_json::json!({
-                    "model": model_name,
-                    "created_at": chrono::Utc::now().to_rfc3339(),
-                    "message": {
-                        "role": "assistant",
-                        "content": ""
-                    },
-                    "done": true,
-                }))
-                .unwrap()),
-        ]);
+        let workflow_for_events = workflow_details.clone();
+        let mut events: Vec<Result<Event, Infallible>> = Vec::new();
+        let created_at = chrono::Utc::now().to_rfc3339();
 
-        Ok(Sse::new(stream).into_response())
-    } else {
-        Ok(Json(ChatResponse {
-            model: model_name,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            message: Message {
-                role: "assistant".to_string(),
-                content: response_text,
-            },
-            done: true,
-            workflow: workflow_details,
-        })
-        .into_response())
+        for (idx, chunk) in chunk_text(&response_text, STREAM_CHUNK_SIZE)
+            .into_iter()
+            .enumerate()
+        {
+            let mut payload = serde_json::json!({
+                "model": &model_name,
+                "created_at": &created_at,
+                "message": {
+                    "role": "assistant",
+                    "content": chunk,
+                },
+                "done": false,
+            });
+            if idx == 0 {
+                insert_workflow_field(&mut payload, &workflow_for_events);
+            }
+            events.push(Ok(Event::default().json_data(payload).unwrap()));
+        }
+
+        events.push(Ok(Event::default()
+            .json_data(serde_json::json!({
+                "model": &model_name,
+                "created_at": &created_at,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                },
+                "done": true,
+            }))
+            .unwrap()));
+
+        return Ok(Sse::new(stream::iter(events)).into_response());
     }
+
+    Ok(Json(ChatResponse {
+        model: model_name,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        message: Message {
+            role: "assistant".to_string(),
+            content: response_text,
+        },
+        done: true,
+        workflow: workflow_details,
+    })
+    .into_response())
 }
 
 // OpenAI Chat Completions compatible endpoint
@@ -262,93 +351,168 @@ async fn openai_chat_completions(
         req.stream
     );
 
-    let prompt = req
-        .messages
-        .iter()
-        .map(|m| format!("{}: {}", m.role, m.content))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let prompt = build_prompt_from_messages(&req.messages);
 
-    let (response_text, workflow_details) = if req.include_workflow.unwrap_or(false) {
-        let result = state.workflow_engine.process_with_details(prompt).await?;
-        (result.final_response, Some(result.execution_details))
-    } else {
-        let response = state.workflow_engine.process(prompt).await?;
-        (response, None)
-    };
+    let include_workflow_details = req.include_workflow.unwrap_or(false);
+    let (response_text, workflow_details) =
+        execute_workflow(&state, prompt, include_workflow_details).await?;
     let model_name = req.model.unwrap_or_else(|| "chorus".to_string());
 
     let now = chrono::Utc::now();
     let created = now.timestamp();
-
     let id = format!("chatcmpl_{}", now.timestamp_millis());
 
     if req.stream.unwrap_or(false) {
-        let stream = stream::iter(vec![
-            Ok::<_, Infallible>(
-                Event::default()
-                    .json_data(serde_json::json!({
-                        "id": id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": model_name,
-                        "choices": [ {
-                            "index": 0,
-                            "delta": { "role": "assistant" },
-                            "finish_reason": serde_json::Value::Null
-                        } ],
-                        "workflow": workflow_details,
-                    }))
-                    .unwrap(),
-            ),
-            Ok(Event::default()
+        let workflow_for_events = workflow_details.clone();
+        let mut events: Vec<Result<Event, Infallible>> = Vec::new();
+
+        let mut role_payload = serde_json::json!({
+            "id": &id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": &model_name,
+            "choices": [ {
+                "index": 0,
+                "delta": { "role": "assistant" },
+                "finish_reason": serde_json::Value::Null
+            } ],
+        });
+        insert_workflow_field(&mut role_payload, &workflow_for_events);
+        events.push(Ok(Event::default().json_data(role_payload).unwrap()));
+
+        for chunk in chunk_text(&response_text, STREAM_CHUNK_SIZE) {
+            events.push(Ok(Event::default()
                 .json_data(serde_json::json!({
-                    "id": id,
+                    "id": &id,
                     "object": "chat.completion.chunk",
                     "created": created,
-                    "model": model_name,
+                    "model": &model_name,
                     "choices": [ {
                         "index": 0,
-                        "delta": { "content": response_text },
+                        "delta": { "content": chunk },
                         "finish_reason": serde_json::Value::Null
                     } ]
                 }))
-                .unwrap()),
-            Ok(Event::default()
-                .json_data(serde_json::json!({
-                    "id": id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": model_name,
-                    "choices": [ {
-                        "index": 0,
-                        "delta": {},
-                        "finish_reason": "stop"
-                    } ]
-                }))
-                .unwrap()),
-            Ok(Event::default().data("[DONE]")),
-        ]);
+                .unwrap()));
+        }
 
-        Ok(Sse::new(stream).into_response())
-    } else {
-        let body = serde_json::json!({
-            "id": id,
-            "object": "chat.completion",
-            "created": created,
-            "model": model_name,
-            "choices": [ {
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": response_text
-                },
-                "finish_reason": "stop"
-            } ],
-            "workflow": workflow_details,
-        });
-        Ok(Json(body).into_response())
+        events.push(Ok(Event::default()
+            .json_data(serde_json::json!({
+                "id": &id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": &model_name,
+                "choices": [ {
+                    "index": 0,
+                    "delta": serde_json::json!({}),
+                    "finish_reason": "stop"
+                } ]
+            }))
+            .unwrap()));
+        events.push(Ok(Event::default().data("[DONE]")));
+
+        return Ok(Sse::new(stream::iter(events)).into_response());
     }
+
+    let body = serde_json::json!({
+        "id": id,
+        "object": "chat.completion",
+        "created": created,
+        "model": model_name,
+        "choices": [ {
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": response_text
+            },
+            "finish_reason": "stop"
+        } ],
+        "workflow": workflow_details,
+    });
+    Ok(Json(body).into_response())
+}
+
+async fn openai_completions(
+    State(state): State<SharedState>,
+    Json(req): Json<CompletionRequest>,
+) -> Result<Response, AppError> {
+    tracing::info!(
+        "Received OpenAI completions request, stream: {:?}",
+        req.stream
+    );
+
+    let prompt = req.prompt.into_prompt();
+    let model_name = req.model.unwrap_or_else(|| "chorus".to_string());
+    let stream_enabled = req.stream.unwrap_or(false);
+    let include_workflow_details = req.include_workflow.unwrap_or(false);
+
+    let (response_text, workflow_details) =
+        execute_workflow(&state, prompt, include_workflow_details).await?;
+
+    let now = chrono::Utc::now();
+    let created = now.timestamp();
+    let id = format!("cmpl_{}", now.timestamp_millis());
+
+    if stream_enabled {
+        let workflow_for_events = workflow_details.clone();
+        let mut events: Vec<Result<Event, Infallible>> = Vec::new();
+
+        for (idx, chunk) in chunk_text(&response_text, STREAM_CHUNK_SIZE)
+            .into_iter()
+            .enumerate()
+        {
+            let mut payload = serde_json::json!({
+                "id": &id,
+                "object": "text_completion",
+                "created": created,
+                "model": &model_name,
+                "choices": [ {
+                    "text": chunk,
+                    "index": 0,
+                    "logprobs": serde_json::Value::Null,
+                    "finish_reason": serde_json::Value::Null
+                } ],
+            });
+            if idx == 0 {
+                insert_workflow_field(&mut payload, &workflow_for_events);
+            }
+            events.push(Ok(Event::default().json_data(payload).unwrap()));
+        }
+
+        events.push(Ok(Event::default()
+            .json_data(serde_json::json!({
+                "id": &id,
+                "object": "text_completion",
+                "created": created,
+                "model": &model_name,
+                "choices": [ {
+                    "text": "",
+                    "index": 0,
+                    "logprobs": serde_json::Value::Null,
+                    "finish_reason": "stop"
+                } ]
+            }))
+            .unwrap()));
+        events.push(Ok(Event::default().data("[DONE]")));
+
+        return Ok(Sse::new(stream::iter(events)).into_response());
+    }
+
+    let body = serde_json::json!({
+        "id": id,
+        "object": "text_completion",
+        "created": created,
+        "model": model_name,
+        "choices": [ {
+            "text": response_text,
+            "index": 0,
+            "logprobs": serde_json::Value::Null,
+            "finish_reason": "stop"
+        } ],
+        "workflow": workflow_details,
+    });
+
+    Ok(Json(body).into_response())
 }
 
 async fn responses(
@@ -479,6 +643,29 @@ async fn responses(
     });
 
     Ok(Json(resp))
+}
+
+async fn list_models_openai(State(state): State<SharedState>) -> impl IntoResponse {
+    let created = chrono::Utc::now().timestamp();
+    let data: Vec<_> = state
+        .config
+        .models
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.name,
+                "object": "model",
+                "created": created,
+                "owned_by": "chorus",
+                "permission": Vec::<serde_json::Value>::new(),
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "object": "list",
+        "data": data
+    }))
 }
 
 async fn list_models(State(state): State<SharedState>) -> impl IntoResponse {
