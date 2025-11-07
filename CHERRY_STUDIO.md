@@ -22,10 +22,11 @@
    - **API 类型**: Ollama
    - **API Base URL**: `http://localhost:11435`
    - **模型名称**: `chorus`
+   - *可选方案*: 也可以选择 **API 类型** 为 OpenAI，并将 Base URL 设置为 `http://localhost:11435/v1`，其余配置保持不变。
 
 ### 使用方法
 
-配置完成后，在对话中选择 `chorus` 模型即可使用。
+配置完成后，在对话中选择 `chorus` 模型即可使用，无论是 Ollama 还是 OpenAI 协议都能正常返回结果。
 
 ## 响应格式
 
@@ -36,6 +37,8 @@ data: {"model":"chorus","created_at":"...","message":{"role":"assistant","conten
 
 data: {"model":"chorus","created_at":"...","message":{"role":"assistant","content":""},"done":true}
 ```
+
+> 提示：服务会把最终回答按照约 120 个字符拆分为多条事件，Cherry Studio 可以实时渲染增量内容。
 
 ### 非流式响应 (stream: false)
 

@@ -512,12 +512,8 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
             content: prompt.to_string(),
         }];
 
-        let temperature = self.resolve_worker_temperature(
-            target,
-            model_config,
-            base_temperature,
-            analyzer_auto,
-        );
+        let temperature =
+            self.resolve_worker_temperature(target, model_config, base_temperature, analyzer_auto);
 
         tracing::debug!(
             "Using temperature {} for worker {} at depth {}",

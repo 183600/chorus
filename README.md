@@ -452,6 +452,17 @@ curl http://localhost:11435/
 }
 ```
 
+### 5. OpenAI 兼容接口
+
+Chorus 也提供了一组与 OpenAI API 兼容的端点，方便 Cherry Studio、OpenAI SDK 等工具直接接入：
+
+- `POST /v1/chat/completions`：功能等同于 `/api/chat`，支持 `stream`，并按照 OpenAI 增量格式推送消息。
+- `POST /v1/completions`：功能等同于 `/api/generate`，接受字符串或字符串数组形式的 `prompt`。
+- `POST /v1/responses`：兼容新版 Responses API。
+- `GET /v1/models`：返回符合 OpenAI 规范的模型列表。
+
+使用这些接口时，将客户端的 Base URL 配置为 `http://localhost:11435/v1` 即可。如果启用了流式模式，Chorus 会自动把最终答案拆分成多个事件发送，Cherry Studio 能够实时刷新回答内容。
+
 ## 🔄 工作流程详解
 
 ### 步骤 1：智能分析
