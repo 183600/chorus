@@ -14,6 +14,7 @@ use axum::{
 use futures::stream;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::Arc;
 
 use std::convert::Infallible;
@@ -515,113 +516,213 @@ async fn openai_completions(
     Ok(Json(body).into_response())
 }
 
+fn extract_text_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Array(items) => {
+            let mut parts = Vec::new();
+            for item in items {
+                if let Some(text) = extract_text_value(item) {
+                    if !text.is_empty() {
+                        parts.push(text);
+                    }
+                }
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n"))
+            }
+        }
+        Value::Object(map) => {
+            for key in ["text", "input_text", "value", "output_text"] {
+                if let Some(Value::String(s)) = map.get(key) {
+                    let trimmed = s.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+            if let Some(content) = map.get("content") {
+                if let Some(text) = extract_text_value(content) {
+                    if !text.is_empty() {
+                        return Some(text);
+                    }
+                }
+            }
+            if let Some(parts) = map.get("parts") {
+                if let Some(text) = extract_text_value(parts) {
+                    if !text.is_empty() {
+                        return Some(text);
+                    }
+                }
+            }
+            if let Some(messages) = map.get("messages") {
+                if let Some(text) = extract_text_value(messages) {
+                    if !text.is_empty() {
+                        return Some(text);
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
+fn extract_message_text(value: &Value) -> Option<String> {
+    if let Value::Object(map) = value {
+        let role = match map.get("role").and_then(|v| v.as_str()) {
+            Some(role) => role,
+            None => return None,
+        };
+        if let Some(content) = map.get("content") {
+            if let Some(text) = extract_text_value(content) {
+                if text.is_empty() {
+                    return None;
+                }
+                return Some(format!("{}: {}", role, text));
+            }
+        }
+        if let Some(Value::String(text)) = map.get("text") {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            return Some(format!("{}: {}", role, trimmed));
+        }
+    }
+    None
+}
+
+fn extract_prompt_from_responses_body(payload: &Value) -> Option<String> {
+    let mut segments: Vec<String> = Vec::new();
+
+    if let Some(Value::String(instr)) = payload.get("instructions") {
+        let trimmed = instr.trim();
+        if !trimmed.is_empty() {
+            segments.push(format!("system: {}", trimmed));
+        }
+    }
+
+    if let Some(Value::Array(messages)) = payload.get("messages") {
+        for msg in messages {
+            if let Some(text) = extract_message_text(msg) {
+                segments.push(text);
+            } else if let Some(text) = extract_text_value(msg) {
+                if !text.is_empty() {
+                    segments.push(text);
+                }
+            }
+        }
+    }
+
+    if let Some(input) = payload.get("input") {
+        match input {
+            Value::String(s) => {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    segments.push(trimmed.to_string());
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    if let Some(text) = extract_message_text(item) {
+                        segments.push(text);
+                    } else if let Some(text) = extract_text_value(item) {
+                        if !text.is_empty() {
+                            segments.push(text);
+                        }
+                    }
+                }
+            }
+            Value::Object(_) => {
+                if let Some(text) = extract_message_text(input) {
+                    segments.push(text);
+                } else if let Some(text) = extract_text_value(input) {
+                    if !text.is_empty() {
+                        segments.push(text);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for key in ["prompt", "input_text"] {
+        if let Some(Value::String(s)) = payload.get(key) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                segments.push(trimmed.to_string());
+            }
+        }
+    }
+
+    if segments.is_empty() {
+        None
+    } else {
+        Some(segments.join("\n"))
+    }
+}
+
 async fn responses(
     State(state): State<SharedState>,
-    Json(req): Json<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    tracing::info!("Received v1/responses request");
-
+    Json(req): Json<Value>,
+) -> Result<Response, AppError> {
     let model_name = req
         .get("model")
         .and_then(|v| v.as_str())
         .unwrap_or("chorus")
         .to_string();
 
-    // Build prompt from messages | input | prompt
-    let build_from_blocks = |blocks: &Vec<serde_json::Value>| -> String {
-        let mut out = String::new();
-        for b in blocks {
-            if let Some(s) = b.as_str() {
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str(s);
-                continue;
-            }
-            if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str(t);
-                continue;
-            }
-            if let Some(t) = b.get("content").and_then(|c| c.as_str()) {
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str(t);
-                continue;
-            }
-            if let Some(arr) = b.get("content").and_then(|c| c.as_array()) {
-                let part = arr
-                    .iter()
-                    .filter_map(|p| {
-                        p.get("text")
-                            .and_then(|t| t.as_str())
-                            .map(|s| s.to_string())
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if !part.is_empty() {
-                    if !out.is_empty() {
-                        out.push('\n');
-                    }
-                    out.push_str(&part);
-                }
-            }
-        }
-        out
-    };
-
-    let prompt = if let Some(messages) = req.get("messages").and_then(|v| v.as_array()) {
-        let mut parts = Vec::new();
-        for m in messages {
-            let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
-            if let Some(s) = m.get("content").and_then(|c| c.as_str()) {
-                parts.push(format!("{}: {}", role, s));
-            } else if let Some(arr) = m.get("content").and_then(|c| c.as_array()) {
-                let text = build_from_blocks(arr);
-                if !text.is_empty() {
-                    parts.push(format!("{}: {}", role, text));
-                }
-            }
-        }
-        parts.join("\n")
-    } else if let Some(input) = req.get("input") {
-        if let Some(s) = input.as_str() {
-            s.to_string()
-        } else if let Some(arr) = input.as_array() {
-            build_from_blocks(arr)
-        } else {
-            String::new()
-        }
-    } else if let Some(s) = req.get("prompt").and_then(|v| v.as_str()) {
-        s.to_string()
-    } else {
-        String::new()
-    };
-
-    if prompt.trim().is_empty() {
-        return Err(AppError(anyhow::anyhow!(
-            "invalid request: missing input/messages/prompt"
-        )));
-    }
+    let stream_requested = matches!(
+        req.get("stream"),
+        Some(Value::Bool(true)) | Some(Value::Object(_))
+    );
 
     let include_workflow_details = req
         .get("include_workflow")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let (response_text, workflow_details) = if include_workflow_details {
-        let result = state
-            .workflow_engine
-            .process_with_details(prompt.clone())
-            .await?;
-        (result.final_response, Some(result.execution_details))
-    } else {
-        let response = state.workflow_engine.process(prompt).await?;
-        (response, None)
-    };
+    tracing::info!(
+        "Received v1/responses request for model {}, stream: {}, include_workflow: {}",
+        model_name.as_str(),
+        stream_requested,
+        include_workflow_details
+    );
+
+    let prompt = extract_prompt_from_responses_body(&req).ok_or_else(|| {
+        AppError(anyhow::anyhow!(
+            "invalid request: missing input/messages/prompt/instructions"
+        ))
+    })?;
+
+    let prompt_len = prompt.len();
+
+    if stream_requested {
+        tracing::warn!(
+            "Responses stream requested but streaming is not yet implemented; returning single response payload"
+        );
+    }
+
+    let (response_text, workflow_details) =
+        execute_workflow(&state, prompt, include_workflow_details).await?;
+
+    tracing::debug!(
+        "Generated responses payload (prompt {} bytes, response {} bytes)",
+        prompt_len,
+        response_text.len()
+    );
 
     let now = chrono::Utc::now();
     let resp = serde_json::json!({
@@ -642,7 +743,7 @@ async fn responses(
         "workflow": workflow_details,
     });
 
-    Ok(Json(resp))
+    Ok(Json(resp).into_response())
 }
 
 async fn list_models_openai(State(state): State<SharedState>) -> impl IntoResponse {
@@ -685,6 +786,80 @@ async fn list_models(State(state): State<SharedState>) -> impl IntoResponse {
     Json(serde_json::json!({
         "models": models
     }))
+}
+
+#[cfg(test)]
+mod responses_tests {
+    use super::extract_prompt_from_responses_body;
+    use serde_json::json;
+
+    #[test]
+    fn extract_prompt_prefers_instructions_and_input() {
+        let payload = json!({
+            "instructions": "Be helpful",
+            "input": "Say hello"
+        });
+        assert_eq!(
+            extract_prompt_from_responses_body(&payload).unwrap(),
+            "system: Be helpful\nSay hello"
+        );
+    }
+
+    #[test]
+    fn extract_prompt_handles_message_arrays() {
+        let payload = json!({
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Hi there"}
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Hello!"}
+                    ]
+                }
+            ]
+        });
+        assert_eq!(
+            extract_prompt_from_responses_body(&payload).unwrap(),
+            "user: Hi there\nassistant: Hello!"
+        );
+    }
+
+    #[test]
+    fn extract_prompt_handles_messages_field_with_string_content() {
+        let payload = json!({
+            "messages": [
+                {"role": "user", "content": "ping"}
+            ]
+        });
+        assert_eq!(
+            extract_prompt_from_responses_body(&payload).unwrap(),
+            "user: ping"
+        );
+    }
+
+    #[test]
+    fn extract_prompt_handles_text_blocks() {
+        let payload = json!({
+            "input": [
+                {"type": "text", "text": "First"},
+                {"type": "input_text", "text": "Second"}
+            ]
+        });
+        assert_eq!(
+            extract_prompt_from_responses_body(&payload).unwrap(),
+            "First\nSecond"
+        );
+    }
+
+    #[test]
+    fn extract_prompt_returns_none_when_empty() {
+        assert!(extract_prompt_from_responses_body(&json!({})).is_none());
+    }
 }
 
 // 错误处理
