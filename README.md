@@ -461,6 +461,54 @@ Chorus 也提供了一组与 OpenAI API 兼容的端点，方便 Cherry Studio�
 - `POST /v1/responses`：兼容新版 Responses API。
 - `GET /v1/models`：返回符合 OpenAI 规范的模型列表。
 
+#### `/v1/responses` 调用示例
+
+```bash
+curl -X POST http://localhost:11435/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "chorus",
+    "instructions": "你是一名乐于助人的中文助理。",
+    "input": "给我三条提高 Rust 编程效率的建议"
+  }'
+```
+
+上面示例展示了如何通过 HTTP 调用 Responses API：
+
+- `instructions` 字段用于描述系统角色或总体目标；
+- 可以通过 `messages` 数组追加多轮历史；
+- `input` 字段可直接提供当前问题文本，数组或对象形式也会被自动展开。
+
+如果希望额外查看工作流执行详情，可以在请求体中加入 `"include_workflow": true`，服务会在响应中附带 `workflow` 字段。
+
+响应示例：
+
+```json
+{
+  "id": "resp_1723467890123",
+  "object": "response",
+  "created": 1723467890,
+  "model": "chorus",
+  "status": "completed",
+  "output": [
+    {
+      "id": "msg_1723467890123",
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "..."
+        }
+      ]
+    }
+  ],
+  "output_text": "..."
+}
+```
+
+> 注意：当前 `/v1/responses` 尚未实现流式输出，即使请求体中包含 `stream` 字段，也会以一次性响应返回最终结果。
+
 使用这些接口时，将客户端的 Base URL 配置为 `http://localhost:11435/v1` 即可。如果启用了流式模式，Chorus 会自动把最终答案拆分成多个事件发送，Cherry Studio 能够实时刷新回答内容。
 
 ## 🔄 工作流程详解
