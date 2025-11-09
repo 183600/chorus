@@ -178,7 +178,7 @@ Chorus 支持三种 temperature 配置方式：
 1. **固定 temperature 值**
    ```toml
    [[model]]
-   name = "qwen3-max"
+   name = "your-model-name"
    temperature = 0.8  # 固定使用 0.8
    ```
    - 适用场景：明确知道该模型适合的 temperature 值
@@ -192,7 +192,7 @@ Chorus 支持三种 temperature 配置方式：
 2. **自动 temperature 选择**
    ```toml
    [[model]]
-   name = "glm-4.6"
+   name = "your-model-name"
    auto_temperature = true  # 由分析器自动决定
    ```
    - 适用场景：希望根据用户问题类型动态调整
@@ -201,7 +201,7 @@ Chorus 支持三种 temperature 配置方式：
 3. **使用默认值**
    ```toml
    [[model]]
-   name = "deepseek-v3.2"
+   name = "your-model-name"
    # 不设置任何 temperature 参数
    ```
    - 默认行为：使用 1.4 作为 temperature
@@ -219,39 +219,39 @@ Chorus 支持三种 temperature 配置方式：
 [workflow-integration]
 json = """{
   "analyzer": {
-    "ref": "glm-4.6",
+    "ref": "model-analyzer",
     "auto_temperature": true
   },
   "workers": [
     {
-      "name": "qwen3-max",
+      "name": "model-worker-a",
       "temperature": 0.8
     },
     {
-      "name": "deepseek-v3.2"
+      "name": "model-worker-b"
     },
     {
       "analyzer": {
-        "ref": "glm-4.6",
+        "ref": "nested-analyzer-model",
         "auto_temperature": true
       },
       "workers": [
         {
-          "name": "kimi-k2-0905",
+          "name": "nested-worker-a",
           "temperature": 0.5
         },
         {
-          "name": "glm-4.6",
+          "name": "nested-worker-b",
           "auto_temperature": true
         }
       ],
       "synthesizer": {
-        "ref": "glm-4.6"
+        "ref": "nested-synthesizer-model"
       }
     }
   ],
   "synthesizer": {
-    "ref": "glm-4.6"
+    "ref": "model-synthesizer"
   }
 }"""
 
@@ -329,13 +329,13 @@ curl -H 'Content-Type: application/json' \
   "done": true,
   "workflow": {
     "analyzer": {
-      "model": "glm-4.6",
+      "model": "model-analyzer",
       "temperature": 1.2,
       "auto_temperature": true
     },
     "workers": [
       {
-        "name": "glm-4.6",
+        "name": "model-worker-a",
         "temperature": 1.2,
         "response": "mock worker reply",
         "success": true,
@@ -343,11 +343,11 @@ curl -H 'Content-Type: application/json' \
       }
     ],
     "synthesizer": {
-      "model": "glm-4.6",
+      "model": "model-synthesizer",
       "temperature": 1.2
     }
   }
-}
+
 ```
 
 ### 2. 聊天接口（Chat API）
