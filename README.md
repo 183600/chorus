@@ -511,6 +511,17 @@ curl -X POST http://localhost:11435/v1/responses \
 
 使用这些接口时，将客户端的 Base URL 配置为 `http://localhost:11435/v1` 即可。如果启用了流式模式，Chorus 会自动把最终答案拆分成多个事件发送，Cherry Studio 能够实时刷新回答内容。
 
+### Cherry Studio 配置示例
+
+在 Cherry Studio 中使用 Chorus：
+
+1. 打开 Settings → Provider
+2. 选择 **Ollama** 作为提供商
+3. 模型名称可填写任意值（建议填写 `chorus` 以便识别）
+4. 将 API 地址设置为 `http://localhost:11435`
+
+保存后即可直接在 Cherry Studio 中调用 Chorus。
+
 ## 🔄 工作流程详解
 
 ### 步骤 1：智能分析
