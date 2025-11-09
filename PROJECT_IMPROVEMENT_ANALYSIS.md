@@ -2,41 +2,37 @@
 
 ## Executive Summary
 
-- **Correctness:** Worker-level `auto_temperature` settings are currently ignored, so operators cannot rely on configuration to tune individual models automatically.
-- **Performance:** Worker executions and HTTP client creation happen sequentially, producing avoidable latency and CPU overhead for every request.
-- **Resilience & Observability:** Several places panic or log overly verbose payloads; tightening error handling and log redaction will make the service safer to operate.
+- **Performance:** Worker requests are executed strictly sequentially and build a fresh `reqwest::Client` for each call, multiplying latency and connection overhead for every user prompt.
+- **Reliability:** The HTTP client layer still relies on `unwrap()` and will panic the entire service when TLS or networking configuration is invalid.
+- **Security & Observability:** Debug logging emits full prompt payloads and error logs print rich `Debug` output, making it easy to leak user data and API keys into centralized log stores.
+- **Client Experience:** The so-called streaming endpoints buffer the complete answer before sending any SSE frames, so clients cannot render incremental tokens, and `/v1/responses` simply warns when `stream=true` instead of delivering a live stream.
 
 ## Findings & Recommendations
 
-### 1. Worker `auto_temperature` is ignored
-- **Where:** [`WorkflowEngine::resolve_worker_temperature`](src/workflow.rs#L573-L586).
-- **What happens:** The function only checks explicit `temperature` overrides and falls back to the analyzer temperature. The `auto_temperature` flag exposed in `WorkflowModelTarget` and the TOML schema is never consulted.
-- **Impact:** Any config that enables `auto_temperature = true` on a worker silently behaves as if it were `false`, reducing answer quality and confusing operators.
-- **Recommendation:** Respect the auto flag by either reusing the analyzer’s computed temperature, requesting a per-model recommendation, or at minimum rejecting configs that set it (to avoid silent failure). Extend unit tests to cover this path.
+### 1. Worker execution is sequential and recreates HTTP clients
+- **Where:** [`WorkflowEngine::run_workers_with_details`](src/workflow.rs#L325-L488) iterates with `for` and awaits each worker inline; [`WorkflowEngine::call_worker_model`](src/workflow.rs#L492-L536) constructs a new [`LLMClient`](src/llm.rs#L47-L58) on every invocation.
+- **What happens:** Each worker waits for the previous one to finish, and every call negotiates a brand-new TCP/TLS client stack.
+- **Impact:** With the default seven workers the end-to-end latency is the sum of all model latencies. Rebuilding the HTTP client prevents connection pooling, DNS caching, and adds unnecessary CPU churn.
+- **Recommendation:** Dispatch workers concurrently (e.g. `FuturesUnordered` or `try_join_all`) with an optional concurrency limit, and reuse `reqwest::Client` instances by caching them per model or sharing an `Arc<Client>`.
 
-### 2. Workers run strictly sequentially and rebuild HTTP clients per call
-- **Where:** [`WorkflowEngine::run_workers_with_details`](src/workflow.rs#L305-L471) iterates with `for` and awaits each worker call directly; [`LLMClient::new`](src/llm.rs#L40-L58) builds a fresh `reqwest::Client` for every invocation.
-- **Impact:** A single request waits for all workers serially; with the default seven models this multiplies response latency. Recreating the HTTP client for every worker costs TLS handshakes and connection pools, wasting CPU.
-- **Recommendation:** Dispatch worker calls concurrently (e.g. `FuturesUnordered` with an optional concurrency limit) and reuse `reqwest::Client` instances—either cache them by domain/model or store them in the engine. Profile latency before/after to confirm gains.
+### 2. HTTP client construction panics on builder errors
+- **Where:** [`LLMClient::new`](src/llm.rs#L47-L58) calls `.build().unwrap()`.
+- **What happens:** Any TLS error, proxy misconfiguration, or invalid timeout causes a panic during request dispatch.
+- **Impact:** A single bad configuration brings down the whole process, making the service fragile in production roll-outs.
+- **Recommendation:** Return a `Result<Self>` (or inject a pre-built `Client` during startup) and surface failures through `AppError` so operators get a clear 5xx instead of a crash.
 
-### 3. `LLMClient::new` can panic when the HTTP client fails to build
-- **Where:** [`LLMClient::new`](src/llm.rs#L47-L52).
-- **What happens:** The builder uses `.build().unwrap()`. Any TLS or config error will terminate the process.
-- **Impact:** One misconfigured timeout or OS-level TLS issue can crash the whole service instead of returning a 500.
-- **Recommendation:** Return a `Result<Self>` (or construct the client once during startup and propagate the error) so the server can surface configuration issues gracefully.
+### 3. Logging leaks sensitive prompt and configuration data
+- **Where:** [`LLMClient::chat_completion`](src/llm.rs#L75-L79) logs the full JSON request body (including prompts) at `debug!`; [`AppError::into_response`](src/server.rs#L866-L879) logs errors with `{:?}`, pulling in structs like `ModelConfig` that derive `Debug` and expose API keys.
+- **Impact:** Prompts often contain private or regulated data, which will land verbatim in log aggregators. Error logs can surface API credentials, violating the README’s promise of “详细日志” without leaking secrets.
+- **Recommendation:** Truncate or redact prompts before logging, gate verbose payload logging behind a feature flag, and ensure configuration structs implement redacted `Debug` (or log via `Display`).
 
-### 4. Debug logging emits full prompt payloads
-- **Where:** [`LLMClient::chat_completion`](src/llm.rs#L75-L79) logs the entire JSON request body at `debug!` level.
-- **Impact:** Prompts often contain sensitive data; even debug logs may be collected centrally. This conflicts with the README’s promise of “详细日志” without warning about PII risk.
-- **Recommendation:** Redact prompt contents, gate verbose logging behind a compile-time feature, or truncate long payloads. Add guidance in the README about enabling sensitive logging.
-
-### 5. SSE/streaming endpoints do not emit incremental tokens
-- **Where:** [`generate`](src/server.rs#L143-L167) and [`chat`](src/server.rs#L209-L239) send the entire response in the first SSE event and a blank completion event.
-- **Impact:** Clients expecting Ollama/OpenAI-style token streaming cannot render partial output, defeating the purpose of `stream = true`.
-- **Recommendation:** Adjust the workflow to stream tokens as they arrive from the synthesizer (or at least chunk the final answer) to match client expectations. Update tests (e.g. `test_streaming.sh`) to assert streaming behavior.
+### 4. Streaming endpoints buffer the entire response
+- **Where:** The `generate`, `chat`, and OpenAI-compatible handlers in [`server.rs`](src/server.rs#L205-L520) call `execute_workflow` first, then chunk the already-finished response. `/v1/responses` warns that streaming is “not yet implemented” when `stream=true` ([`server.rs#L677-L716`](src/server.rs#L677-L716)).
+- **What happens:** SSE clients receive nothing until the synthesizer finishes, so they cannot render partial output.
+- **Impact:** Users connecting with Ollama/OpenAI-compatible UIs experience frozen progress bars and lose the main benefit of streaming APIs.
+- **Recommendation:** Wire the synthesizer (or upstream model calls) into a real streaming pipeline that forwards tokens as they arrive, and either implement or formally reject `/v1/responses` streaming instead of silently downgrading it.
 
 ## Additional Observations
 
-- `AppError` logs errors with `{:?}`, which can include configuration structs containing API keys. Introducing redacted Debug implementations (or formatting `Display` only) would reduce leakage risk.
-- Consider adding integration tests for the `/v1/responses` path and nested workflow execution to guard against regressions during future refactors.
-- The README promises “自适应参数” for multiple stages; once the auto-temperature bug is fixed, add documentation describing analyzer/worker behavior so operators know what to expect.
+- `AppError` uses `tracing::error!("{:?}")`; once configuration structs adopt redacted formatting, switch to `tracing::error!(error = %self.0)` to avoid accidental secrets.
+- Integration tests that exercise `/v1/responses` and token-by-token streaming would guard against future regressions once true streaming is implemented.
