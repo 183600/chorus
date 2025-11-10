@@ -8,6 +8,22 @@ use url::Url;
 
 const DEFAULT_TEMPERATURE: f32 = 1.4;
 
+struct SelectedChoice {
+    index: usize,
+    worker_name: String,
+    response: String,
+    reasoning: Option<String>,
+    raw_output: String,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedSelection {
+    index: usize,
+    label: Option<String>,
+    reasoning: Option<String>,
+    selected_response: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowResult {
     pub final_response: String,
@@ -18,6 +34,8 @@ pub struct WorkflowResult {
 pub struct WorkflowExecutionDetails {
     pub analyzer: AnalyzerDetails,
     pub workers: Vec<WorkerDetails>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selector: Option<SelectorDetails>,
     pub synthesizer: SynthesizerDetails,
 }
 
@@ -36,6 +54,25 @@ pub struct WorkerDetails {
     pub success: bool,
     pub error: Option<String>,
     pub nested: Option<Box<WorkflowExecutionDetails>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelectorDetails {
+    pub model: String,
+    pub temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_worker: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_response: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_output: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +178,15 @@ impl WorkflowEngine {
             })
             .collect();
 
+        let (selector_details, selected_choice) = if let Some(selector_target) = plan.selector.as_ref() {
+            let (details, choice) = self
+                .execute_selector(selector_target, prompt, &worker_responses, depth)
+                .await;
+            (Some(details), choice)
+        } else {
+            (None, None)
+        };
+
         let synthesizer_target = &plan.synthesizer;
         let synthesizer_model_config = self.lookup_model(&synthesizer_target.model)?;
         let synthesizer_temperature = self.resolve_synthesizer_temperature(
@@ -155,7 +201,13 @@ impl WorkflowEngine {
         };
 
         let final_response = self
-            .call_synthesizer(plan, prompt, &worker_responses, depth)
+            .call_synthesizer(
+                plan,
+                prompt,
+                &worker_responses,
+                selected_choice.as_ref(),
+                depth,
+            )
             .await?;
 
         if depth == 0 {
@@ -172,6 +224,7 @@ impl WorkflowEngine {
             execution_details: WorkflowExecutionDetails {
                 analyzer: analyzer_details,
                 workers: worker_details,
+                selector: selector_details,
                 synthesizer: synthesizer_details,
             },
         })
@@ -535,11 +588,208 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
         Ok(response)
     }
 
+    async fn execute_selector(
+        &self,
+        target: &WorkflowModelTarget,
+        original_prompt: &str,
+        worker_responses: &[(String, String)],
+        depth: usize,
+    ) -> (SelectorDetails, Option<SelectedChoice>) {
+        if worker_responses.is_empty() {
+            tracing::warn!(
+                selector = %target.model,
+                depth,
+                "Selector skipped because no worker responses are available"
+            );
+            return (
+                SelectorDetails {
+                    model: target.model.clone(),
+                    temperature: DEFAULT_TEMPERATURE,
+                    selected_index: None,
+                    selected_worker: None,
+                    selected_response: None,
+                    reasoning: None,
+                    success: false,
+                    error: Some("No worker responses available for selector".to_string()),
+                    raw_output: None,
+                },
+                None,
+            );
+        }
+
+        let model_config = match self.lookup_model(&target.model) {
+            Ok(config) => config,
+            Err(err) => {
+                let message = err.to_string();
+                tracing::warn!(
+                    selector = %target.model,
+                    depth,
+                    error = %message,
+                    "Selector lookup failed"
+                );
+                return (
+                    SelectorDetails {
+                        model: target.model.clone(),
+                        temperature: DEFAULT_TEMPERATURE,
+                        selected_index: None,
+                        selected_worker: None,
+                        selected_response: None,
+                        reasoning: None,
+                        success: false,
+                        error: Some(message),
+                        raw_output: None,
+                    },
+                    None,
+                );
+            }
+        };
+
+        let temperature = self.resolve_selector_temperature(target, model_config, depth);
+
+        let domain = extract_domain_from_url(&model_config.api_base);
+        let timeouts = self.config.effective_timeouts_for_domain(domain.as_deref());
+        let client = LLMClient::new(
+            model_config.api_base.clone(),
+            model_config.api_key.clone(),
+            timeouts.synthesizer_timeout_secs,
+        );
+
+        let mut selector_prompt = format!(
+            "原始用户问题：\n{}\n\n以下是多个模型给出的回答，请选出质量最高的一条。\n\n",
+            original_prompt
+        );
+
+        for (i, (label, response)) in worker_responses.iter().enumerate() {
+            selector_prompt.push_str(&format!("【回答{}：{}】\n{}\n\n", i + 1, label, response));
+        }
+
+        selector_prompt.push_str(
+            "请仅返回一个 JSON 对象，格式如下：\n\
+            {\n  \"selected_index\": 1,\n  \"selected_worker\": \"模型名称\",\n  \"selected_response\": \"可选：直接粘贴所选回答\",\n  \"reasoning\": \"简要说明\"\n}\n\
+            要求：\n\
+            - selected_index 使用上面编号（从 1 开始）\n\
+            - reasoning 简洁说明选择理由，如有不足请指出\n\
+            - 如所有回答都存在问题，请选出相对最佳的一条并说明原因\n\
+            只需输出 JSON 对象。\n",
+        );
+
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: selector_prompt,
+        }];
+
+        let raw_output = match client
+            .chat_completion(&target.model, messages, Some(temperature))
+            .await
+        {
+            Ok(content) => content,
+            Err(err) => {
+                let message = err.to_string();
+                tracing::warn!(
+                    selector = %target.model,
+                    depth,
+                    error = %message,
+                    "Selector call failed"
+                );
+                return (
+                    SelectorDetails {
+                        model: target.model.clone(),
+                        temperature,
+                        selected_index: None,
+                        selected_worker: None,
+                        selected_response: None,
+                        reasoning: None,
+                        success: false,
+                        error: Some(message),
+                        raw_output: None,
+                    },
+                    None,
+                );
+            }
+        };
+
+        match parse_selector_choice(&raw_output, worker_responses.len()) {
+            Ok(parsed) => {
+                let worker_entry = &worker_responses[parsed.index - 1];
+                let worker_name = worker_entry.0.clone();
+                let worker_response = worker_entry.1.clone();
+                let reasoning = parsed.reasoning.clone();
+                let selected_response = parsed
+                    .selected_response
+                    .clone()
+                    .unwrap_or_else(|| worker_response.clone());
+
+                if depth == 0 {
+                    tracing::info!(
+                        selector = %target.model,
+                        chosen_index = parsed.index,
+                        chosen_worker = %worker_name,
+                        "Selector chose worker response at top-level"
+                    );
+                } else {
+                    tracing::debug!(
+                        selector = %target.model,
+                        depth,
+                        chosen_index = parsed.index,
+                        chosen_worker = %worker_name,
+                        "Selector chose worker response"
+                    );
+                }
+
+                let details = SelectorDetails {
+                    model: target.model.clone(),
+                    temperature,
+                    selected_index: Some(parsed.index),
+                    selected_worker: Some(worker_name.clone()),
+                    selected_response: Some(selected_response),
+                    reasoning: reasoning.clone(),
+                    success: true,
+                    error: None,
+                    raw_output: Some(raw_output.clone()),
+                };
+
+                let choice = SelectedChoice {
+                    index: parsed.index,
+                    worker_name,
+                    response: worker_response,
+                    reasoning,
+                    raw_output,
+                };
+
+                (details, Some(choice))
+            }
+            Err(err) => {
+                let message = err.to_string();
+                tracing::warn!(
+                    selector = %target.model,
+                    depth,
+                    error = %message,
+                    "Selector response parsing failed"
+                );
+                (
+                    SelectorDetails {
+                        model: target.model.clone(),
+                        temperature,
+                        selected_index: None,
+                        selected_worker: None,
+                        selected_response: None,
+                        reasoning: None,
+                        success: false,
+                        error: Some(message),
+                        raw_output: Some(raw_output),
+                    },
+                    None,
+                )
+            }
+        }
+    }
+
     async fn call_synthesizer(
         &self,
         plan: &WorkflowPlan,
         original_prompt: &str,
         worker_responses: &[(String, String)],
+        selected_choice: Option<&SelectedChoice>,
         depth: usize,
     ) -> Result<String> {
         let target = &plan.synthesizer;
@@ -562,13 +812,32 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
             synthesis_prompt.push_str(&format!("【模型{}：{}】\n{}\n\n", i + 1, label, response));
         }
 
-        synthesis_prompt.push_str(
-            "请综合以上所有回答，生成一个高质量的最终答案。要求：\n\
-            1. 综合各个模型的优点\n\
-            2. 确保答案准确、完整\n\
-            3. 保持清晰的逻辑和结构\n\
-            4. 直接给出最终答案，不要提及\"综合以上回答\"等元信息\n",
-        );
+        if let Some(choice) = selected_choice {
+            synthesis_prompt.push_str(&format!(
+                "选择器推荐的最佳回答（编号 {} / 模型 {}）：\n{}\n\n",
+                choice.index, choice.worker_name, choice.response
+            ));
+            if let Some(reasoning) = &choice.reasoning {
+                synthesis_prompt.push_str("推荐理由：\n");
+                synthesis_prompt.push_str(reasoning);
+                synthesis_prompt.push_str("\n\n");
+            }
+            synthesis_prompt.push_str(
+                "请基于推荐回答进行优化，必要时参考其他回答补充信息，生成一个高质量的最终答案。要求：\n\
+                1. 保留或提升推荐回答中的核心信息\n\
+                2. 结合其他回答弥补遗漏或纠正错误\n\
+                3. 保持逻辑清晰、结构合理\n\
+                4. 直接给出最终答案，不要提及\"综合以上回答\"等元信息\n",
+            );
+        } else {
+            synthesis_prompt.push_str(
+                "请综合以上所有回答，生成一个高质量的最终答案。要求：\n\
+                1. 综合各个模型的优点\n\
+                2. 确保答案准确、完整\n\
+                3. 保持清晰的逻辑和结构\n\
+                4. 直接给出最终答案，不要提及\"综合以上回答\"等元信息\n",
+            );
+        }
 
         let messages = vec![ChatMessage {
             role: "user".to_string(),
@@ -627,11 +896,30 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
         }
     }
 
+    fn resolve_selector_temperature(
+        &self,
+        target: &WorkflowModelTarget,
+        model_config: &ModelConfig,
+        depth: usize,
+    ) -> f32 {
+        self.resolve_secondary_temperature(target, model_config, depth, "Selector")
+    }
+
     fn resolve_synthesizer_temperature(
         &self,
         target: &WorkflowModelTarget,
         model_config: &ModelConfig,
         depth: usize,
+    ) -> f32 {
+        self.resolve_secondary_temperature(target, model_config, depth, "Synthesizer")
+    }
+
+    fn resolve_secondary_temperature(
+        &self,
+        target: &WorkflowModelTarget,
+        model_config: &ModelConfig,
+        depth: usize,
+        role: &str,
     ) -> f32 {
         if let Some(t) = target.temperature {
             return t;
@@ -643,7 +931,8 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
             || matches!(model_config.auto_temperature, Some(true))
         {
             tracing::debug!(
-                "Synthesizer {} requested auto temperature at depth {}, defaulting to {}",
+                "{} {} requested auto temperature at depth {}, defaulting to {}",
+                role,
                 target.model,
                 depth,
                 DEFAULT_TEMPERATURE
@@ -666,6 +955,252 @@ fn extract_domain_from_url(url: &str) -> Option<String> {
     Url::parse(url)
         .ok()
         .and_then(|u| u.host_str().map(|s| s.to_string()))
+}
+
+fn parse_selector_choice(response: &str, worker_count: usize) -> Result<ParsedSelection> {
+    if worker_count == 0 {
+        return Err(anyhow!(
+            "Selector cannot choose from an empty set of worker responses"
+        ));
+    }
+
+    if let Some(json_str) = extract_first_json_object(response) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
+            if let Some(index_value) = find_value_in_json(
+                &value,
+                &[
+                    "selected_index",
+                    "index",
+                    "choice",
+                    "selected",
+                    "best_index",
+                    "best",
+                ],
+            ) {
+                if let Some(index) = value_to_usize(index_value) {
+                    if (1..=worker_count).contains(&index) {
+                        let label = find_value_in_json(
+                            &value,
+                            &[
+                                "selected_worker",
+                                "selected_label",
+                                "model",
+                                "name",
+                                "label",
+                            ],
+                        )
+                        .and_then(value_to_string);
+                        let reasoning = find_value_in_json(
+                            &value,
+                            &[
+                                "reasoning",
+                                "explanation",
+                                "why",
+                                "comment",
+                                "analysis",
+                            ],
+                        )
+                        .and_then(value_to_string);
+                        let selected_response = find_value_in_json(
+                            &value,
+                            &[
+                                "selected_response",
+                                "response",
+                                "content",
+                                "answer",
+                            ],
+                        )
+                        .and_then(value_to_string);
+
+                        return Ok(ParsedSelection {
+                            index,
+                            label,
+                            reasoning,
+                            selected_response,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(index) = find_first_index_in_text(response, worker_count) {
+        let reasoning_text = response.trim();
+        let reasoning = if reasoning_text.is_empty() {
+            None
+        } else {
+            Some(reasoning_text.to_string())
+        };
+        return Ok(ParsedSelection {
+            index,
+            label: None,
+            reasoning,
+            selected_response: None,
+        });
+    }
+
+    Err(anyhow!(
+        "Selector response did not include a valid selected_index"
+    ))
+}
+
+fn extract_first_json_object(input: &str) -> Option<&str> {
+    let mut depth = 0;
+    let mut start = None;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for (idx, ch) in input.char_indices() {
+        if in_string {
+            if escape {
+                escape = false;
+                continue;
+            }
+            if ch == '\\' {
+                escape = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    start = Some(idx);
+                }
+                depth += 1;
+            }
+            '}' => {
+                if depth > 0 {
+                    depth -= 1;
+                    if depth == 0 {
+                        if let Some(begin) = start {
+                            return input.get(begin..=idx);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn find_value_in_json<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Option<&'a serde_json::Value> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in keys {
+                if let Some(found) = map.get(*key) {
+                    return Some(found);
+                }
+            }
+            for val in map.values() {
+                if let Some(found) = find_value_in_json(val, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(items) => items.iter().find_map(|item| find_value_in_json(item, keys)),
+        _ => None,
+    }
+}
+
+fn value_to_usize(value: &serde_json::Value) -> Option<usize> {
+    match value {
+        serde_json::Value::Number(n) => {
+            if let Some(u) = n.as_u64() {
+                Some(u as usize)
+            } else if let Some(f) = n.as_f64() {
+                let rounded = f.round();
+                if (rounded - f).abs() < f32::EPSILON as f64 {
+                    let val = rounded as i64;
+                    if val > 0 {
+                        Some(val as usize)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        serde_json::Value::String(s) => s.trim().parse::<usize>().ok(),
+        _ => None,
+    }
+}
+
+fn value_to_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        serde_json::Value::Array(items) => {
+            let mut parts = Vec::new();
+            for item in items {
+                if let Some(text) = value_to_string(item) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        parts.push(trimmed.to_string());
+                    }
+                }
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join(" "))
+            }
+        }
+        serde_json::Value::Object(_) => None,
+    }
+}
+
+fn find_first_index_in_text(text: &str, worker_count: usize) -> Option<usize> {
+    let mut current = String::new();
+
+    for ch in text.chars() {
+        if ch.is_ascii_digit() {
+            current.push(ch);
+        } else {
+            if let Some(index) = parse_candidate_index(&current, worker_count) {
+                return Some(index);
+            }
+            current.clear();
+        }
+    }
+
+    if let Some(index) = parse_candidate_index(&current, worker_count) {
+        return Some(index);
+    }
+
+    None
+}
+
+fn parse_candidate_index(fragment: &str, worker_count: usize) -> Option<usize> {
+    if fragment.is_empty() {
+        return None;
+    }
+    if let Ok(value) = fragment.parse::<usize>() {
+        if value >= 1 && value <= worker_count {
+            return Some(value);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -702,6 +1237,7 @@ mod tests {
                     temperature: Some(0.2),
                     auto_temperature: None,
                 },
+                selector: None,
             },
             workflow: WorkflowConfig {
                 timeouts: TimeoutConfig {
@@ -845,6 +1381,33 @@ mod tests {
             base,
             resolved
         );
+    }
+
+    #[test]
+    fn selector_parser_handles_json_payload() {
+        let payload = r#"{
+  "selected_index": 2,
+  "selected_worker": "model-b",
+  "reasoning": "更详细",
+  "selected_response": "Answer B"
+}"#;
+        let parsed = parse_selector_choice(payload, 3).expect("should parse");
+        assert_eq!(parsed.index, 2);
+        assert_eq!(parsed.label.as_deref(), Some("model-b"));
+        assert_eq!(parsed.selected_response.as_deref(), Some("Answer B"));
+        assert_eq!(parsed.reasoning.as_deref(), Some("更详细"));
+    }
+
+    #[test]
+    fn selector_parser_falls_back_to_text_index() {
+        let payload = "我认为第1个回答最好，因为涵盖了所有要点。";
+        let parsed = parse_selector_choice(payload, 3).expect("should parse");
+        assert_eq!(parsed.index, 1);
+        assert!(parsed
+            .reasoning
+            .as_ref()
+            .expect("has reasoning")
+            .contains("回答"));
     }
 
     #[tokio::test]

@@ -113,15 +113,24 @@ json = """{
           ],
           "synthesizer": {
             "ref": "glm-4.6"
+          },
+          "selector": {
+            "ref": "glm-4.6"
           }
         }
       ],
       "synthesizer": {
         "ref": "glm-4.6"
+      },
+      "selector": {
+        "ref": "glm-4.6"
       }
     }
   ],
   "synthesizer": {
+    "ref": "glm-4.6"
+  },
+  "selector": {
     "ref": "glm-4.6"
   }
 }"""
@@ -178,6 +187,8 @@ pub struct WorkflowPlan {
     #[serde(default)]
     pub workers: Vec<WorkflowWorker>,
     pub synthesizer: WorkflowModelTarget,
+    #[serde(default)]
+    pub selector: Option<WorkflowModelTarget>,
 }
 
 impl WorkflowPlan {
@@ -215,6 +226,12 @@ impl WorkflowPlan {
             "synthesizer".to_string(),
             JsonValue::Object(Self::target_to_json_map(&self.synthesizer, "ref")),
         );
+        if let Some(selector) = &self.selector {
+            map.insert(
+                "selector".to_string(),
+                JsonValue::Object(Self::target_to_json_map(selector, "ref")),
+            );
+        }
 
         Ok(JsonValue::Object(map))
     }
@@ -465,6 +482,7 @@ impl Config {
                             temperature: None,
                             auto_temperature: None,
                         },
+                        selector: None,
                     },
                     workflow: legacy.workflow,
                 },

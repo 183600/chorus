@@ -194,15 +194,24 @@ json = """{
           ],
           "synthesizer": {
             "ref": "glm-4.6"
+          },
+          "selector": {
+            "ref": "glm-4.6"
           }
         }
       ],
       "synthesizer": {
         "ref": "glm-4.6"
+      },
+      "selector": {
+        "ref": "glm-4.6"
       }
     }
   ],
   "synthesizer": {
+    "ref": "glm-4.6"
+  },
+  "selector": {
     "ref": "glm-4.6"
   }
 }"""
@@ -219,6 +228,14 @@ synthesizer_timeout_secs = 30
 
         assert_eq!(cfg.workflow_integration.analyzer.model, "glm-4.6");
         assert_eq!(cfg.workflow_integration.workers.len(), 3);
+        assert_eq!(cfg.workflow_integration.synthesizer.model, "glm-4.6");
+        assert_eq!(
+            cfg.workflow_integration
+                .selector
+                .as_ref()
+                .map(|t| t.model.as_str()),
+            Some("glm-4.6")
+        );
 
         let nested = match &cfg.workflow_integration.workers[2] {
             WorkflowWorker::Workflow(plan) => plan.as_ref(),
@@ -228,6 +245,13 @@ synthesizer_timeout_secs = 30
         assert_eq!(nested.analyzer.model, "glm-4.6");
         assert_eq!(nested.workers.len(), 4);
         assert_eq!(nested.synthesizer.model, "glm-4.6");
+        assert_eq!(
+            nested
+                .selector
+                .as_ref()
+                .map(|t| t.model.as_str()),
+            Some("glm-4.6")
+        );
 
         let deeper = match &nested.workers[3] {
             WorkflowWorker::Workflow(plan) => plan.as_ref(),
@@ -237,6 +261,13 @@ synthesizer_timeout_secs = 30
         assert_eq!(deeper.analyzer.model, "glm-4.6");
         assert_eq!(deeper.workers.len(), 3);
         assert_eq!(deeper.synthesizer.model, "glm-4.6");
+        assert_eq!(
+            deeper
+                .selector
+                .as_ref()
+                .map(|t| t.model.as_str()),
+            Some("glm-4.6")
+        );
 
         let serialized = cfg
             .workflow_integration
@@ -245,6 +276,15 @@ synthesizer_timeout_secs = 30
 
         let value = serde_json::from_str::<serde_json::Value>(&serialized).unwrap();
 
+        assert_eq!(value["selector"]["ref"].as_str(), Some("glm-4.6"));
+        assert_eq!(
+            value["workers"][2]["selector"]["ref"].as_str(),
+            Some("glm-4.6")
+        );
+        assert_eq!(
+            value["workers"][2]["workers"][3]["selector"]["ref"].as_str(),
+            Some("glm-4.6")
+        );
         assert_eq!(
             value["workers"][2]["workers"][3]["workers"]
                 .as_array()

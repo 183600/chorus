@@ -22,6 +22,9 @@ json = """{
   ],
   "synthesizer": {
     "ref": "glm-4.6"
+  },
+  "selector": {
+    "ref": "glm-4.6"
   }
 }"""
 
