@@ -140,6 +140,11 @@ api_base = "https://apis.iflow.cn/v1"
 api_key = "k"
 name = "qwen3-coder"
 
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "k"
+name = "qwen3-max"
+
 [workflow-integration]
 json = """{
   "analyzer": {
@@ -148,12 +153,8 @@ json = """{
   },
   "workers": [
     {
-      "name": "deepseek-r1",
-      "temperature": 0.4
-    },
-    {
       "name": "deepseek-v3.2",
-      "temperature": 0.4
+      "temperature": 1
     },
     {
       "analyzer": {
@@ -163,15 +164,15 @@ json = """{
       "workers": [
         {
           "name": "kimi-k2-0905",
-          "temperature": 0.4
+          "temperature": 1
         },
         {
           "name": "deepseek-v3.2",
-          "temperature": 0.4
+          "temperature": 1
         },
         {
           "name": "glm-4.6",
-          "temperature": 0.4
+          "temperature": 1
         },
         {
           "analyzer": {
@@ -181,38 +182,32 @@ json = """{
           "workers": [
             {
               "name": "qwen3-coder",
-              "temperature": 0.4
+              "temperature": 1
             },
             {
               "name": "deepseek-v3.1",
-              "temperature": 0.4
+              "temperature": 1
             },
             {
-              "name": "glm-4.6",
-              "temperature": 0.4
+              "name": "qwen3-max",
+              "temperature": 1
             }
           ],
           "synthesizer": {
-            "ref": "glm-4.6"
-          },
-          "selector": {
-            "ref": "glm-4.6"
+            "ref": "qwen3-max"
           }
         }
       ],
       "synthesizer": {
-        "ref": "glm-4.6"
-      },
-      "selector": {
-        "ref": "glm-4.6"
+        "ref": "qwen3-max"
       }
     }
   ],
   "synthesizer": {
-    "ref": "glm-4.6"
+    "ref": "qwen3-max"
   },
   "selector": {
-    "ref": "glm-4.6"
+    "ref": "qwen3-max"
   }
 }"""
 
@@ -227,30 +222,27 @@ synthesizer_timeout_secs = 30
         let cfg: Config = toml::from_str(CFG_NESTED).unwrap();
 
         assert_eq!(cfg.workflow_integration.analyzer.model, "glm-4.6");
-        assert_eq!(cfg.workflow_integration.workers.len(), 3);
-        assert_eq!(cfg.workflow_integration.synthesizer.model, "glm-4.6");
+        assert_eq!(cfg.workflow_integration.workers.len(), 2);
+        assert_eq!(cfg.workflow_integration.synthesizer.model, "qwen3-max");
         assert_eq!(
             cfg.workflow_integration
                 .selector
                 .as_ref()
                 .map(|t| t.model.as_str()),
-            Some("glm-4.6")
+            Some("qwen3-max")
         );
 
-        let nested = match &cfg.workflow_integration.workers[2] {
+        let nested = match &cfg.workflow_integration.workers[1] {
             WorkflowWorker::Workflow(plan) => plan.as_ref(),
             other => panic!("expected nested workflow worker, got {:?}", other),
         };
 
         assert_eq!(nested.analyzer.model, "glm-4.6");
         assert_eq!(nested.workers.len(), 4);
-        assert_eq!(nested.synthesizer.model, "glm-4.6");
-        assert_eq!(
-            nested
-                .selector
-                .as_ref()
-                .map(|t| t.model.as_str()),
-            Some("glm-4.6")
+        assert_eq!(nested.synthesizer.model, "qwen3-max");
+        assert!(
+            nested.selector.is_none(),
+            "nested workflow selector should be None"
         );
 
         let deeper = match &nested.workers[3] {
@@ -260,13 +252,10 @@ synthesizer_timeout_secs = 30
 
         assert_eq!(deeper.analyzer.model, "glm-4.6");
         assert_eq!(deeper.workers.len(), 3);
-        assert_eq!(deeper.synthesizer.model, "glm-4.6");
-        assert_eq!(
-            deeper
-                .selector
-                .as_ref()
-                .map(|t| t.model.as_str()),
-            Some("glm-4.6")
+        assert_eq!(deeper.synthesizer.model, "qwen3-max");
+        assert!(
+            deeper.selector.is_none(),
+            "deepest workflow selector should be None"
         );
 
         let serialized = cfg
@@ -276,17 +265,19 @@ synthesizer_timeout_secs = 30
 
         let value = serde_json::from_str::<serde_json::Value>(&serialized).unwrap();
 
-        assert_eq!(value["selector"]["ref"].as_str(), Some("glm-4.6"));
-        assert_eq!(
-            value["workers"][2]["selector"]["ref"].as_str(),
-            Some("glm-4.6")
+        assert_eq!(value["selector"]["ref"].as_str(), Some("qwen3-max"));
+        assert!(
+            value["workers"][1].get("selector").is_none(),
+            "nested workflow should not serialize selector when absent"
+        );
+        assert!(
+            value["workers"][1]["workers"][3]
+                .get("selector")
+                .is_none(),
+            "deep workflow should not serialize selector when absent"
         );
         assert_eq!(
-            value["workers"][2]["workers"][3]["selector"]["ref"].as_str(),
-            Some("glm-4.6")
-        );
-        assert_eq!(
-            value["workers"][2]["workers"][3]["workers"]
+            value["workers"][1]["workers"][3]["workers"]
                 .as_array()
                 .unwrap()
                 .len(),

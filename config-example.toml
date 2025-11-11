@@ -43,11 +43,8 @@ json = """{
   },
   "workers": [
     {
-      "name": "qwen3-max",
-      "temperature": 0.8
-    },
-    {
-      "name": "deepseek-v3.2"
+      "name": "deepseek-v3.2",
+      "temperature": 1
     },
     {
       "analyzer": {
@@ -57,27 +54,50 @@ json = """{
       "workers": [
         {
           "name": "kimi-k2-0905",
-          "temperature": 0.5
+          "temperature": 1
+        },
+        {
+          "name": "deepseek-v3.2",
+          "temperature": 1
         },
         {
           "name": "glm-4.6",
-          "auto_temperature": true
+          "temperature": 1
+        },
+        {
+          "analyzer": {
+            "ref": "glm-4.6",
+            "auto_temperature": true
+          },
+          "workers": [
+            {
+              "name": "qwen3-coder",
+              "temperature": 1
+            },
+            {
+              "name": "deepseek-v3.1",
+              "temperature": 1
+            },
+            {
+              "name": "qwen3-max",
+              "temperature": 1
+            }
+          ],
+          "synthesizer": {
+            "ref": "qwen3-max"
+          }
         }
       ],
       "synthesizer": {
-        "ref": "glm-4.6"
-      },
-      "selector": {
-        "ref": "glm-4.6"
+        "ref": "qwen3-max"
       }
     }
   ],
   "synthesizer": {
-    "ref": "glm-4.6",
-    "auto_temperature": true
+    "ref": "qwen3-max"
   },
   "selector": {
-    "ref": "glm-4.6"
+    "ref": "qwen3-max"
   }
 }"""
 
