@@ -66,12 +66,18 @@ json = """{
       ],
       "synthesizer": {
         "ref": "glm-4.6"
+      },
+      "selector": {
+        "ref": "glm-4.6"
       }
     }
   ],
   "synthesizer": {
     "ref": "glm-4.6",
     "auto_temperature": true
+  },
+  "selector": {
+    "ref": "glm-4.6"
   }
 }"""
 
