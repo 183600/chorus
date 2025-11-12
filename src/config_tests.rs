@@ -325,6 +325,57 @@ synthesizer_timeout_secs = 1
     }
 
     #[test]
+    fn nested_workflow_missing_synthesizer_reports_clear_error() {
+        const CFG: &str = r#"
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+api_base = "https://api.example.com/v1"
+api_key = "k"
+name = "m1"
+
+[workflow-integration]
+json = """{
+  "analyzer": {
+    "ref": "m1"
+  },
+  "workers": [
+    {
+      "analyzer": {
+        "ref": "m1"
+      },
+      "workers": [
+        {
+          "name": "m1"
+        }
+      ]
+    }
+  ],
+  "synthesizer": {
+    "ref": "m1"
+  }
+}"""
+
+[workflow.timeouts]
+analyzer_timeout_secs = 1
+worker_timeout_secs = 1
+synthesizer_timeout_secs = 1
+"#;
+
+        let err = toml::from_str::<Config>(CFG).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains(
+                "Nested workflow worker is missing required `synthesizer` field"
+            ),
+            "error message should mention missing nested synthesizer, got: {}",
+            message
+        );
+    }
+
+    #[test]
     fn legacy_timeouts_used_when_no_override() {
         let cfg: Config = toml::from_str(CFG_LEGACY).unwrap();
         let eff = cfg.effective_timeouts_for_domain(Some("api.example.com"));
