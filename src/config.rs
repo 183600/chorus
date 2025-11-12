@@ -197,11 +197,85 @@ impl WorkflowPlan {
     }
 
     pub fn from_json_str(json: &str) -> Result<Self> {
-        serde_json::from_str(json).map_err(|err| {
+        let mut value: JsonValue = serde_json::from_str(json).map_err(|err| {
             anyhow!(
                 "Failed to parse workflow integration JSON: {}",
                 err
             )
+        })?;
+
+        Self::ensure_synthesizer_targets(&mut value).map_err(|err| {
+            anyhow!(
+                "Failed to parse workflow integration JSON: {}",
+                err
+            )
+        })?;
+
+        serde_json::from_value(value).map_err(|err| {
+            anyhow!(
+                "Failed to parse workflow integration JSON: {}",
+                err
+            )
+        })
+    }
+
+    fn ensure_synthesizer_targets(value: &mut JsonValue) -> Result<()> {
+        if !value.is_object() {
+            return Err(anyhow!(
+                "Workflow integration JSON must start with an object at the root"
+            ));
+        }
+
+        Self::ensure_synthesizer_targets_recursive(value, None, "workflow")?;
+        Ok(())
+    }
+
+    fn ensure_synthesizer_targets_recursive(
+        node: &mut JsonValue,
+        inherited_synthesizer: Option<JsonValue>,
+        path: &str,
+    ) -> Result<JsonValue> {
+        let map = node
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("Workflow node at {} must be a JSON object", path))?;
+
+        let synthesizer_value = if let Some(existing) = map.get("synthesizer") {
+            if !existing.is_object() {
+                return Err(anyhow!(
+                    "Workflow node at {} has an invalid `synthesizer` field; expected an object with `ref` or `name`.",
+                    path
+                ));
+            }
+            existing.clone()
+        } else if let Some(inherited) = inherited_synthesizer {
+            map.insert("synthesizer".to_string(), inherited.clone());
+            inherited
+        } else {
+            return Err(anyhow!("missing field `synthesizer` at {}", path));
+        };
+
+        if let Some(workers) = map
+            .get_mut("workers")
+            .and_then(|workers| workers.as_array_mut())
+        {
+            for (index, worker) in workers.iter_mut().enumerate() {
+                if Self::is_nested_workflow(worker) {
+                    let nested_path = format!("{} -> workers[{}]", path, index);
+                    Self::ensure_synthesizer_targets_recursive(
+                        worker,
+                        Some(synthesizer_value.clone()),
+                        &nested_path,
+                    )?;
+                }
+            }
+        }
+
+        Ok(synthesizer_value)
+    }
+
+    fn is_nested_workflow(value: &JsonValue) -> bool {
+        value.as_object().map_or(false, |map| {
+            map.contains_key("analyzer") && map.contains_key("workers")
         })
     }
 
