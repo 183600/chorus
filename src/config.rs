@@ -265,8 +265,7 @@ pub struct WorkflowModelTarget {
     pub auto_temperature: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone, Serialize)]
 pub enum WorkflowWorker {
     Model(WorkflowModelTarget),
     Workflow(Box<WorkflowPlan>),
@@ -277,6 +276,74 @@ impl WorkflowWorker {
         match self {
             WorkflowWorker::Model(target) => target.model.clone(),
             WorkflowWorker::Workflow(plan) => plan.label(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkflowWorker {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = JsonValue::deserialize(deserializer)?;
+        match value {
+            JsonValue::Object(map) => {
+                let has_name = map.contains_key("name") || map.contains_key("ref");
+                let has_analyzer = map.contains_key("analyzer");
+                let has_workers = map.contains_key("workers");
+                let has_synthesizer = map.contains_key("synthesizer");
+
+                let value = JsonValue::Object(map);
+
+                if has_analyzer || has_workers || has_synthesizer {
+                    if !has_analyzer {
+                        return Err(D::Error::custom(
+                            "Nested workflow worker is missing required `analyzer` field. Each nested workflow must include an `analyzer` configuration.",
+                        ));
+                    }
+                    if !has_workers {
+                        return Err(D::Error::custom(
+                            "Nested workflow worker is missing required `workers` field. Provide at least one worker entry inside the nested workflow.",
+                        ));
+                    }
+                    if !has_synthesizer {
+                        return Err(D::Error::custom(
+                            "Nested workflow worker is missing required `synthesizer` field. Each nested workflow must define its own `synthesizer` target.",
+                        ));
+                    }
+
+                    let plan: WorkflowPlan = serde_json::from_value(value).map_err(|err| {
+                        D::Error::custom(format!(
+                            "Failed to parse nested workflow worker: {}",
+                            err
+                        ))
+                    })?;
+                    return Ok(WorkflowWorker::Workflow(Box::new(plan)));
+                }
+
+                if has_name {
+                    let target: WorkflowModelTarget = serde_json::from_value(value).map_err(|err| {
+                        D::Error::custom(format!(
+                            "Failed to parse workflow worker model: {}",
+                            err
+                        ))
+                    })?;
+                    return Ok(WorkflowWorker::Model(target));
+                }
+
+                Err(D::Error::custom(
+                    "Workflow worker entries must either specify a `name`/`ref` model or a nested workflow with `analyzer`, `workers`, and `synthesizer` fields",
+                ))
+            }
+            JsonValue::String(name) => Ok(WorkflowWorker::Model(WorkflowModelTarget {
+                model: name,
+                temperature: None,
+                auto_temperature: None,
+            })),
+            other => Err(D::Error::custom(format!(
+                "Workflow worker entries must be JSON objects or string model references, got {}",
+                other
+            ))),
         }
     }
 }
