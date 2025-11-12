@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::de::Error as DeError;
 use serde::{de::Deserializer, Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
@@ -197,7 +197,12 @@ impl WorkflowPlan {
     }
 
     pub fn from_json_str(json: &str) -> Result<Self> {
-        serde_json::from_str(json).with_context(|| "Failed to parse workflow integration JSON")
+        serde_json::from_str(json).map_err(|err| {
+            anyhow!(
+                "Failed to parse workflow integration JSON: {}",
+                err
+            )
+        })
     }
 
     fn to_json_value(&self) -> Result<JsonValue> {
