@@ -223,7 +223,13 @@ synthesizer_timeout_secs = 30
 
         assert_eq!(cfg.workflow_integration.analyzer.model, "glm-4.6");
         assert_eq!(cfg.workflow_integration.workers.len(), 2);
-        assert_eq!(cfg.workflow_integration.synthesizer.model, "qwen3-max");
+        assert_eq!(
+            cfg.workflow_integration
+                .synthesizer
+                .as_ref()
+                .map(|t| t.model.as_str()),
+            Some("qwen3-max")
+        );
         assert_eq!(
             cfg.workflow_integration
                 .selector
@@ -239,7 +245,13 @@ synthesizer_timeout_secs = 30
 
         assert_eq!(nested.analyzer.model, "glm-4.6");
         assert_eq!(nested.workers.len(), 4);
-        assert_eq!(nested.synthesizer.model, "qwen3-max");
+        assert_eq!(
+            nested
+                .synthesizer
+                .as_ref()
+                .map(|t| t.model.as_str()),
+            Some("qwen3-max")
+        );
         assert!(
             nested.selector.is_none(),
             "nested workflow selector should be None"
@@ -252,7 +264,13 @@ synthesizer_timeout_secs = 30
 
         assert_eq!(deeper.analyzer.model, "glm-4.6");
         assert_eq!(deeper.workers.len(), 3);
-        assert_eq!(deeper.synthesizer.model, "qwen3-max");
+        assert_eq!(
+            deeper
+                .synthesizer
+                .as_ref()
+                .map(|t| t.model.as_str()),
+            Some("qwen3-max")
+        );
         assert!(
             deeper.selector.is_none(),
             "deepest workflow selector should be None"
@@ -318,9 +336,62 @@ synthesizer_timeout_secs = 1
         let err = toml::from_str::<Config>(CFG).unwrap_err();
         let message = err.to_string();
         assert!(
-            message.contains("missing field `synthesizer`"),
-            "error message should include missing field detail, got: {}",
+            message.contains("must define at least one of `synthesizer` or `selector`"),
+            "error message should include missing aggregator detail, got: {}",
             message
+        );
+    }
+
+    #[test]
+    fn workflow_selector_without_synthesizer_parses() {
+        const CFG: &str = r#"
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+api_base = "https://api.example.com/v1"
+api_key = "k"
+name = "m1"
+
+[workflow-integration]
+json = """{
+  "analyzer": {
+    "ref": "m1"
+  },
+  "workers": [
+    {
+      "name": "m1"
+    }
+  ],
+  "selector": {
+    "ref": "m1"
+  }
+}"""
+
+[workflow.timeouts]
+analyzer_timeout_secs = 1
+worker_timeout_secs = 1
+synthesizer_timeout_secs = 1
+"#;
+
+        let cfg: Config = toml::from_str(CFG).unwrap();
+        assert!(cfg.workflow_integration.synthesizer.is_none());
+        assert_eq!(
+            cfg.workflow_integration
+                .selector
+                .as_ref()
+                .map(|t| t.model.as_str()),
+            Some("m1")
+        );
+
+        let serialized = cfg
+            .workflow_integration
+            .to_json_string()
+            .expect("selector-only workflow should serialize");
+        assert!(
+            !serialized.contains("\"synthesizer\""),
+            "selector-only workflow should not include synthesizer in serialized JSON"
         );
     }
 
@@ -378,20 +449,27 @@ synthesizer_timeout_secs = 1
             other => panic!("expected nested workflow worker, got {:?}", other),
         };
 
-        assert_eq!(
-            nested.synthesizer.model,
-            cfg.workflow_integration.synthesizer.model
-        );
+        let parent_synth = cfg
+            .workflow_integration
+            .synthesizer
+            .as_ref()
+            .expect("parent synthesizer should be present");
+        let nested_synth = nested
+            .synthesizer
+            .as_ref()
+            .expect("nested synthesizer should be inherited");
+        assert_eq!(nested_synth.model, parent_synth.model);
 
         let deeper = match &nested.workers[0] {
             WorkflowWorker::Workflow(plan) => plan.as_ref(),
             other => panic!("expected nested workflow worker, got {:?}", other),
         };
 
-        assert_eq!(
-            deeper.synthesizer.model,
-            cfg.workflow_integration.synthesizer.model
-        );
+        let deeper_synth = deeper
+            .synthesizer
+            .as_ref()
+            .expect("deeper synthesizer should be inherited");
+        assert_eq!(deeper_synth.model, parent_synth.model);
 
         let deepest_worker = match &deeper.workers[0] {
             WorkflowWorker::Model(target) => target,
@@ -524,7 +602,13 @@ json = """
 
         assert_eq!(cfg.models.len(), 8);
         assert_eq!(cfg.workflow_integration.analyzer.model, "glm-4.6");
-        assert_eq!(cfg.workflow_integration.synthesizer.model, "glm-4.6");
+        assert_eq!(
+            cfg.workflow_integration
+                .synthesizer
+                .as_ref()
+                .map(|t| t.model.as_str()),
+            Some("glm-4.6")
+        );
         assert_eq!(cfg.workflow_integration.workers.len(), 7);
 
         let worker_names: Vec<String> = cfg
@@ -611,7 +695,13 @@ json = """
         let cfg: Config = toml::from_str(CFG).unwrap();
         assert_eq!(cfg.models.len(), 3);
         assert_eq!(cfg.workflow_integration.analyzer.model, "glm-4.6");
-        assert_eq!(cfg.workflow_integration.synthesizer.model, "glm-4.6");
+        assert_eq!(
+            cfg.workflow_integration
+                .synthesizer
+                .as_ref()
+                .map(|t| t.model.as_str()),
+            Some("glm-4.6")
+        );
         assert_eq!(cfg.workflow_integration.workers.len(), 3);
 
         let worker_names: Vec<String> = cfg
@@ -720,7 +810,13 @@ synthesizer_timeout_secs = 60000
 
         assert_eq!(cfg.workflow_integration.analyzer.model, "glm-4.6");
         assert_eq!(cfg.workflow_integration.workers.len(), 2);
-        assert_eq!(cfg.workflow_integration.synthesizer.model, "glm-4.6");
+        assert_eq!(
+            cfg.workflow_integration
+                .synthesizer
+                .as_ref()
+                .map(|t| t.model.as_str()),
+            Some("glm-4.6")
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
         drop(home_guard);

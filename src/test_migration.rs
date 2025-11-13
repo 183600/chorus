@@ -105,10 +105,13 @@ fn main() -> anyhow::Result<()> {
         "  - 工作节点数量: {}",
         config.workflow_integration.workers.len()
     );
-    println!(
-        "  - 综合器模型: {}",
-        config.workflow_integration.synthesizer.model
-    );
+    if let Some(synth) = &config.workflow_integration.synthesizer {
+        println!("  - 综合器模型: {}", synth.model);
+    } else if let Some(selector) = &config.workflow_integration.selector {
+        println!("  - 综合器模型: 使用选择器 {}", selector.model);
+    } else {
+        println!("  - 综合器模型: 未配置");
+    }
 
     Ok(())
 }

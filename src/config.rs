@@ -176,14 +176,21 @@ pub struct WorkflowPlan {
     pub analyzer: WorkflowModelTarget,
     #[serde(default)]
     pub workers: Vec<WorkflowWorker>,
-    pub synthesizer: WorkflowModelTarget,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synthesizer: Option<WorkflowModelTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<WorkflowModelTarget>,
 }
 
 impl WorkflowPlan {
     pub fn label(&self) -> String {
-        format!("workflow:{}", self.synthesizer.model)
+        if let Some(synthesizer) = &self.synthesizer {
+            format!("workflow:{}", synthesizer.model)
+        } else if let Some(selector) = &self.selector {
+            format!("workflow:selector:{}", selector.model)
+        } else {
+            format!("workflow:{}", self.analyzer.model)
+        }
     }
 
     pub fn worker_labels(&self) -> Vec<String> {
@@ -204,54 +211,92 @@ impl WorkflowPlan {
             )
         })?;
 
-        Self::ensure_synthesizer_targets(&mut value).map_err(|err| {
+        Self::ensure_workflow_targets(&mut value).map_err(|err| {
             anyhow!(
                 "Failed to parse workflow integration JSON: {}",
                 err
             )
         })?;
 
-        serde_json::from_value(value).map_err(|err| {
+        let plan: Self = serde_json::from_value(value).map_err(|err| {
             anyhow!(
                 "Failed to parse workflow integration JSON: {}",
                 err
             )
-        })
+        })?;
+
+        plan.validate_structure().map_err(|err| {
+            anyhow!(
+                "Failed to parse workflow integration JSON: {}",
+                err
+            )
+        })?;
+
+        Ok(plan)
     }
 
-    fn ensure_synthesizer_targets(value: &mut JsonValue) -> Result<()> {
+    fn ensure_workflow_targets(value: &mut JsonValue) -> Result<()> {
         if !value.is_object() {
             return Err(anyhow!(
                 "Workflow integration JSON must start with an object at the root"
             ));
         }
 
-        Self::ensure_synthesizer_targets_recursive(value, None, "workflow")?;
+        Self::ensure_workflow_targets_recursive(value, None, "workflow")?;
         Ok(())
     }
 
-    fn ensure_synthesizer_targets_recursive(
+    fn ensure_workflow_targets_recursive(
         node: &mut JsonValue,
         inherited_synthesizer: Option<JsonValue>,
         path: &str,
-    ) -> Result<JsonValue> {
+    ) -> Result<Option<JsonValue>> {
         let map = node
             .as_object_mut()
             .ok_or_else(|| anyhow!("Workflow node at {} must be a JSON object", path))?;
 
-        let synthesizer_value = if let Some(existing) = map.get("synthesizer") {
-            if !existing.is_object() {
+        let mut synthesizer_value = match map.get("synthesizer") {
+            Some(existing) => {
+                if !existing.is_object() {
+                    return Err(anyhow!(
+                        "Workflow node at {} has an invalid `synthesizer` field; expected an object with `ref` or `name`.",
+                        path
+                    ));
+                }
+                Some(existing.clone())
+            }
+            None => None,
+        };
+
+        if let Some(selector_value) = map.get("selector") {
+            if !selector_value.is_object() {
                 return Err(anyhow!(
-                    "Workflow node at {} has an invalid `synthesizer` field; expected an object with `ref` or `name`.",
+                    "Workflow node at {} has an invalid `selector` field; expected an object with `ref` or `name`.",
                     path
                 ));
             }
-            existing.clone()
-        } else if let Some(inherited) = inherited_synthesizer {
-            map.insert("synthesizer".to_string(), inherited.clone());
-            inherited
+        }
+
+        if synthesizer_value.is_none() {
+            if let Some(inherited) = &inherited_synthesizer {
+                map.insert("synthesizer".to_string(), inherited.clone());
+                synthesizer_value = Some(inherited.clone());
+            }
+        }
+
+        let has_selector = map.contains_key("selector");
+
+        if synthesizer_value.is_none() && !has_selector {
+            return Err(anyhow!(
+                "Workflow node at {} must define at least one of `synthesizer` or `selector`",
+                path
+            ));
+        }
+
+        let inherited_for_children = if let Some(synth) = &synthesizer_value {
+            Some(synth.clone())
         } else {
-            return Err(anyhow!("missing field `synthesizer` at {}", path));
+            inherited_synthesizer.clone()
         };
 
         if let Some(workers) = map
@@ -261,16 +306,16 @@ impl WorkflowPlan {
             for (index, worker) in workers.iter_mut().enumerate() {
                 if Self::is_nested_workflow(worker) {
                     let nested_path = format!("{} -> workers[{}]", path, index);
-                    Self::ensure_synthesizer_targets_recursive(
+                    Self::ensure_workflow_targets_recursive(
                         worker,
-                        Some(synthesizer_value.clone()),
+                        inherited_for_children.clone(),
                         &nested_path,
                     )?;
                 }
             }
         }
 
-        Ok(synthesizer_value)
+        Ok(synthesizer_value.or(inherited_synthesizer))
     }
 
     fn is_nested_workflow(value: &JsonValue) -> bool {
@@ -291,10 +336,12 @@ impl WorkflowPlan {
             workers.push(Self::worker_to_json(worker)?);
         }
         map.insert("workers".to_string(), JsonValue::Array(workers));
-        map.insert(
-            "synthesizer".to_string(),
-            JsonValue::Object(Self::target_to_json_map(&self.synthesizer, "ref")),
-        );
+        if let Some(synthesizer) = &self.synthesizer {
+            map.insert(
+                "synthesizer".to_string(),
+                JsonValue::Object(Self::target_to_json_map(synthesizer, "ref")),
+            );
+        }
         if let Some(selector) = &self.selector {
             map.insert(
                 "selector".to_string(),
@@ -303,6 +350,35 @@ impl WorkflowPlan {
         }
 
         Ok(JsonValue::Object(map))
+    }
+
+    pub fn validate_structure(&self) -> Result<()> {
+        self.validate_with_context(None, "workflow")
+    }
+
+    fn validate_with_context(
+        &self,
+        inherited_synthesizer: Option<&WorkflowModelTarget>,
+        path: &str,
+    ) -> Result<()> {
+        let synthesizer = self.synthesizer.as_ref().or(inherited_synthesizer);
+        let has_selector = self.selector.is_some();
+
+        if synthesizer.is_none() && !has_selector {
+            return Err(anyhow!(
+                "Workflow node at {} must define at least one of `synthesizer` or `selector`",
+                path
+            ));
+        }
+
+        for (index, worker) in self.workers.iter().enumerate() {
+            if let WorkflowWorker::Workflow(plan) = worker {
+                let nested_path = format!("{} -> workers[{}]", path, index);
+                plan.validate_with_context(synthesizer, &nested_path)?;
+            }
+        }
+
+        Ok(())
     }
 
     fn worker_to_json(worker: &WorkflowWorker) -> Result<JsonValue> {
@@ -366,10 +442,11 @@ impl<'de> Deserialize<'de> for WorkflowWorker {
                 let has_analyzer = map.contains_key("analyzer");
                 let has_workers = map.contains_key("workers");
                 let has_synthesizer = map.contains_key("synthesizer");
+                let has_selector = map.contains_key("selector");
 
                 let value = JsonValue::Object(map);
 
-                if has_analyzer || has_workers || has_synthesizer {
+                if has_analyzer || has_workers || has_synthesizer || has_selector {
                     if !has_analyzer {
                         return Err(D::Error::custom(
                             "Nested workflow worker is missing required `analyzer` field. Each nested workflow must include an `analyzer` configuration.",
@@ -378,11 +455,6 @@ impl<'de> Deserialize<'de> for WorkflowWorker {
                     if !has_workers {
                         return Err(D::Error::custom(
                             "Nested workflow worker is missing required `workers` field. Provide at least one worker entry inside the nested workflow.",
-                        ));
-                    }
-                    if !has_synthesizer {
-                        return Err(D::Error::custom(
-                            "Nested workflow worker is missing required `synthesizer` field. Each nested workflow must define its own `synthesizer` target.",
                         ));
                     }
 
@@ -483,7 +555,12 @@ where
             .map_err(|err| DeError::custom(format!("Failed to parse workflow json: {}", err))),
         PlanInput::PlainString(json) => WorkflowPlan::from_json_str(&json)
             .map_err(|err| DeError::custom(format!("Failed to parse workflow json: {}", err))),
-        PlanInput::Plan(plan) => Ok(plan),
+        PlanInput::Plan(plan) => {
+            plan
+                .validate_structure()
+                .map_err(|err| DeError::custom(format!("Failed to parse workflow json: {}", err)))?;
+            Ok(plan)
+        }
     }
 }
 
@@ -613,11 +690,11 @@ impl Config {
                                 })
                             })
                             .collect(),
-                        synthesizer: WorkflowModelTarget {
+                        synthesizer: Some(WorkflowModelTarget {
                             model: legacy.workflow_integration.synthesizer_model,
                             temperature: None,
                             auto_temperature: None,
-                        },
+                        }),
                         selector: None,
                     },
                     workflow: legacy.workflow,
