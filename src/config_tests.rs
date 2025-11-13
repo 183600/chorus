@@ -325,7 +325,7 @@ synthesizer_timeout_secs = 1
     }
 
     #[test]
-    fn nested_workflow_missing_synthesizer_reports_clear_error() {
+    fn nested_workflow_missing_synthesizer_inherits_parent() {
         const CFG: &str = r#"
 [server]
 host = "127.0.0.1"
@@ -348,7 +348,14 @@ json = """{
       },
       "workers": [
         {
-          "name": "m1"
+          "analyzer": {
+            "ref": "m1"
+          },
+          "workers": [
+            {
+              "name": "m1"
+            }
+          ]
         }
       ]
     }
@@ -364,15 +371,34 @@ worker_timeout_secs = 1
 synthesizer_timeout_secs = 1
 "#;
 
-        let err = toml::from_str::<Config>(CFG).unwrap_err();
-        let message = err.to_string();
-        assert!(
-            message.contains(
-                "Nested workflow worker is missing required `synthesizer` field"
-            ),
-            "error message should mention missing nested synthesizer, got: {}",
-            message
+        let cfg: Config = toml::from_str(CFG).unwrap();
+
+        let nested = match &cfg.workflow_integration.workers[0] {
+            WorkflowWorker::Workflow(plan) => plan.as_ref(),
+            other => panic!("expected nested workflow worker, got {:?}", other),
+        };
+
+        assert_eq!(
+            nested.synthesizer.model,
+            cfg.workflow_integration.synthesizer.model
         );
+
+        let deeper = match &nested.workers[0] {
+            WorkflowWorker::Workflow(plan) => plan.as_ref(),
+            other => panic!("expected nested workflow worker, got {:?}", other),
+        };
+
+        assert_eq!(
+            deeper.synthesizer.model,
+            cfg.workflow_integration.synthesizer.model
+        );
+
+        let deepest_worker = match &deeper.workers[0] {
+            WorkflowWorker::Model(target) => target,
+            other => panic!("expected model worker, got {:?}", other),
+        };
+
+        assert_eq!(deepest_worker.model, "m1");
     }
 
     #[test]
