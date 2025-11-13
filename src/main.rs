@@ -33,10 +33,13 @@ async fn main() -> Result<()> {
         config.workflow_integration.analyzer.model
     );
     tracing::info!("Worker nodes: {:?}", worker_labels);
-    tracing::info!(
-        "Synthesizer model: {}",
-        config.workflow_integration.synthesizer.model
-    );
+    if let Some(synth) = &config.workflow_integration.synthesizer {
+        tracing::info!("Synthesizer model: {}", synth.model);
+    } else if let Some(selector) = &config.workflow_integration.selector {
+        tracing::info!("No synthesizer configured; using selector: {}", selector.model);
+    } else {
+        tracing::warn!("No synthesizer or selector configured for the workflow");
+    }
 
     // 启动服务器
     server::start_server(Arc::new(config)).await?;

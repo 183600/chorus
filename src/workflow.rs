@@ -36,7 +36,8 @@ pub struct WorkflowExecutionDetails {
     pub workers: Vec<WorkerDetails>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selector: Option<SelectorDetails>,
-    pub synthesizer: SynthesizerDetails,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub synthesizer: Option<SynthesizerDetails>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,34 +188,47 @@ impl WorkflowEngine {
             (None, None)
         };
 
-        let synthesizer_target = &plan.synthesizer;
-        let synthesizer_model_config = self.lookup_model(&synthesizer_target.model)?;
-        let synthesizer_temperature = self.resolve_synthesizer_temperature(
-            synthesizer_target,
-            synthesizer_model_config,
-            depth,
-        );
+        let (synthesizer_details, final_response) = if let Some(synthesizer_target) = plan.synthesizer.as_ref() {
+            let synthesizer_model_config = self.lookup_model(&synthesizer_target.model)?;
+            let synthesizer_temperature = self.resolve_synthesizer_temperature(
+                synthesizer_target,
+                synthesizer_model_config,
+                depth,
+            );
 
-        let synthesizer_details = SynthesizerDetails {
-            model: synthesizer_target.model.clone(),
-            temperature: synthesizer_temperature,
-        };
+            let synthesizer_details = SynthesizerDetails {
+                model: synthesizer_target.model.clone(),
+                temperature: synthesizer_temperature,
+            };
 
-        let final_response = self
-            .call_synthesizer(
+            let final_response = self
+                .call_synthesizer(
+                    synthesizer_target,
+                    prompt,
+                    &worker_responses,
+                    selected_choice.as_ref(),
+                    depth,
+                )
+                .await?;
+
+            (Some(synthesizer_details), final_response)
+        } else {
+            let final_response = self.resolve_final_response_without_synthesizer(
                 plan,
-                prompt,
-                &worker_responses,
+                &worker_details,
+                selector_details.as_ref(),
                 selected_choice.as_ref(),
                 depth,
-            )
-            .await?;
+            )?;
+
+            (None, final_response)
+        };
 
         if depth == 0 {
             tracing::info!("Step 3 completed - Final response generated");
         } else {
             tracing::debug!(
-                "Nested workflow depth {} synthesized response successfully",
+                "Nested workflow depth {} produced final response",
                 depth
             );
         }
@@ -233,6 +247,97 @@ impl WorkflowEngine {
     async fn run_plan(&self, plan: &WorkflowPlan, prompt: &str, depth: usize) -> Result<String> {
         let result = self.run_plan_with_details(plan, prompt, depth).await?;
         Ok(result.final_response)
+    }
+
+    fn resolve_final_response_without_synthesizer(
+        &self,
+        plan: &WorkflowPlan,
+        worker_details: &[WorkerDetails],
+        selector_details: Option<&SelectorDetails>,
+        selected_choice: Option<&SelectedChoice>,
+        depth: usize,
+    ) -> Result<String> {
+        let _ = self;
+        let plan_label = plan.label();
+
+        if let Some(details) = selector_details {
+            if let Some(selected_response) = details.selected_response.clone() {
+                if depth == 0 {
+                    tracing::info!(
+                        plan = %plan_label,
+                        "Using selector recommendation as final response"
+                    );
+                } else {
+                    tracing::debug!(
+                        plan = %plan_label,
+                        depth,
+                        "Using selector recommendation as final response"
+                    );
+                }
+                return Ok(selected_response);
+            }
+
+            if let Some(choice) = selected_choice {
+                if depth == 0 {
+                    tracing::info!(
+                        plan = %plan_label,
+                        worker = %choice.worker_name,
+                        "Selector chose worker response; using it as final output"
+                    );
+                } else {
+                    tracing::debug!(
+                        plan = %plan_label,
+                        depth,
+                        worker = %choice.worker_name,
+                        "Selector chose worker response; using it as final output"
+                    );
+                }
+                return Ok(choice.response.clone());
+            }
+
+            tracing::warn!(
+                plan = %plan_label,
+                depth,
+                "Selector failed to provide a choice; falling back to worker responses"
+            );
+        } else {
+            tracing::debug!(
+                plan = %plan_label,
+                depth,
+                "No selector configured; using worker responses directly"
+            );
+        }
+
+        let fallback = worker_details
+            .iter()
+            .find_map(|worker| {
+                if worker.success {
+                    worker.response.clone()
+                } else {
+                    None
+                }
+            });
+
+        if let Some(response) = fallback {
+            if depth == 0 {
+                tracing::info!(
+                    plan = %plan_label,
+                    "Using first successful worker response as final output"
+                );
+            } else {
+                tracing::debug!(
+                    plan = %plan_label,
+                    depth,
+                    "Using first successful worker response as final output"
+                );
+            }
+            Ok(response)
+        } else {
+            Err(anyhow!(
+                "Workflow plan {} could not determine a final response because the selector failed and no worker responses were available.",
+                plan_label
+            ))
+        }
     }
 
     async fn resolve_analyzer_temperature(
@@ -786,13 +891,12 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
 
     async fn call_synthesizer(
         &self,
-        plan: &WorkflowPlan,
+        target: &WorkflowModelTarget,
         original_prompt: &str,
         worker_responses: &[(String, String)],
         selected_choice: Option<&SelectedChoice>,
         depth: usize,
     ) -> Result<String> {
-        let target = &plan.synthesizer;
         let model_config = self.lookup_model(&target.model)?;
 
         let domain = extract_domain_from_url(&model_config.api_base);
@@ -1232,11 +1336,11 @@ mod tests {
                     auto_temperature: None,
                 },
                 workers,
-                synthesizer: WorkflowModelTarget {
+                synthesizer: Some(WorkflowModelTarget {
                     model: "primary".to_string(),
                     temperature: Some(0.2),
                     auto_temperature: None,
-                },
+                }),
                 selector: None,
             },
             workflow: WorkflowConfig {
