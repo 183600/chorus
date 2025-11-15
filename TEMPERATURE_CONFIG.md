@@ -252,7 +252,7 @@ A: 会略微增加延迟，因为需要先调用分析器模型。但这个延�
 - ✅ 添加 `auto_temperature` 配置项到 `ModelConfig`
 - ✅ 更新 `workflow.rs` 以支持新的配置逻辑
 - ✅ 更新默认配置模板（`DEFAULT_CONFIG`）
-- ✅ 更新 `test-config.toml` 示例
+- ✅ 更新配置示例文档
 - ✅ 创建 `config-example.toml` 详细示例
 - ✅ 更新 `README.md` 文档
 - ✅ 创建本说明文档
