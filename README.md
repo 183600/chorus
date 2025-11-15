@@ -92,49 +92,7 @@ cd chorus
 
 2. **配置 API Key**
 
-- **生产 / 真实调用**：编辑 `~/.config/chorus/config.toml` 文件，将所有 `your-api-key-here` 替换为真实的 iFlow API Key。
-- **本地快速体验**：仓库提供了 `mock_iflow.py`（模拟 iFlow 服务）和 `test-config.toml` 示例配置，无需真实 API Key。使用方式如下：
-
-  ```bash
-  # 终端 1：启动本地模拟 LLM 服务（监听 127.0.0.1:18080）
-  python3 mock_iflow.py
-
-  # 终端 2：使用示例配置运行 Chorus
-  CHORUS_CONFIG=./test-config.toml cargo run
-  ```
-
-示例配置文件 `test-config.toml` 内容如:
-
-```toml
-[[model]]
-api_base = "http://127.0.0.1:18080"
-api_key = "sk-TEST-IFLOW-KEY"
-name = "glm-4.6"
-
-[workflow-integration]
-json = """{
-  "analyzer": {
-    "ref": "glm-4.6",
-    "auto_temperature": true
-  },
-  "workers": [
-    {
-      "name": "glm-4.6"
-    }
-  ],
-  "synthesizer": {
-    "ref": "glm-4.6"
-  },
-  "selector": {
-    "ref": "glm-4.6"
-  }
-}"""
-
-[workflow.timeouts]
-analyzer_timeout_secs = 30000
-worker_timeout_secs = 60000
-synthesizer_timeout_secs = 60000
-```
+   编辑 `~/.config/chorus/config.toml` 文件，将所有 `your-api-key-here` 替换为真实的 iFlow API Key。你可以参考仓库中的 `config-example.toml` 或 `config-json-format-example.toml` 了解完整的配置选项和工作流示例。
 
 3. **编译项目**
 
