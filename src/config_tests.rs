@@ -480,6 +480,66 @@ synthesizer_timeout_secs = 1
     }
 
     #[test]
+    fn inline_workflow_plan_inherits_parent_synthesizer() {
+        const CFG: &str = r#"
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+api_base = "https://api.example.com/v1"
+api_key = "k"
+name = "m1"
+
+[workflow-integration]
+analyzer = { ref = "m1" }
+workers = [
+  { analyzer = { ref = "m1" }, workers = [
+      { name = "m1" },
+      { analyzer = { ref = "m1" }, workers = [
+          { name = "m1" }
+      ] }
+  ] }
+]
+synthesizer = { ref = "m1" }
+
+[workflow.timeouts]
+analyzer_timeout_secs = 5
+worker_timeout_secs = 5
+synthesizer_timeout_secs = 5
+"#;
+
+        let cfg: Config = toml::from_str(CFG).unwrap();
+
+        let nested = match &cfg.workflow_integration.workers[0] {
+            WorkflowWorker::Workflow(plan) => plan.as_ref(),
+            other => panic!("expected nested workflow worker, got {:?}", other),
+        };
+
+        let parent_synth = cfg
+            .workflow_integration
+            .synthesizer
+            .as_ref()
+            .expect("parent synthesizer should be present");
+        let nested_synth = nested
+            .synthesizer
+            .as_ref()
+            .expect("nested workflow should inherit synthesizer");
+        assert_eq!(nested_synth.model, parent_synth.model);
+
+        let deeper = match &nested.workers[1] {
+            WorkflowWorker::Workflow(plan) => plan.as_ref(),
+            other => panic!("expected deeper nested workflow, got {:?}", other),
+        };
+
+        let deeper_synth = deeper
+            .synthesizer
+            .as_ref()
+            .expect("deeper workflow should inherit synthesizer");
+        assert_eq!(deeper_synth.model, parent_synth.model);
+    }
+
+    #[test]
     fn legacy_timeouts_used_when_no_override() {
         let cfg: Config = toml::from_str(CFG_LEGACY).unwrap();
         let eff = cfg.effective_timeouts_for_domain(Some("api.example.com"));
