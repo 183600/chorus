@@ -403,7 +403,7 @@ impl WorkflowEngine {
             model_config.api_base.clone(),
             model_config.api_key.clone(),
             timeouts.analyzer_timeout_secs,
-        );
+        )?;
 
         let analysis_prompt = format!(
             r#"请分析以下用户提示，并为其推荐一个合适的temperature参数（0.0-2.0之间的浮点数）。
@@ -663,7 +663,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
             model_config.api_base.clone(),
             model_config.api_key.clone(),
             timeouts.worker_timeout_secs,
-        );
+        )?;
 
         let messages = vec![ChatMessage {
             role: "user".to_string(),
@@ -753,11 +753,36 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
 
         let domain = extract_domain_from_url(&model_config.api_base);
         let timeouts = self.config.effective_timeouts_for_domain(domain.as_deref());
-        let client = LLMClient::new(
+        let client = match LLMClient::new(
             model_config.api_base.clone(),
             model_config.api_key.clone(),
             timeouts.synthesizer_timeout_secs,
-        );
+        ) {
+            Ok(client) => client,
+            Err(err) => {
+                let message = err.to_string();
+                tracing::warn!(
+                    selector = %target.model,
+                    depth,
+                    error = %message,
+                    "Selector client construction failed"
+                );
+                return (
+                    SelectorDetails {
+                        model: target.model.clone(),
+                        temperature,
+                        selected_index: None,
+                        selected_worker: None,
+                        selected_response: None,
+                        reasoning: None,
+                        success: false,
+                        error: Some(message),
+                        raw_output: None,
+                    },
+                    None,
+                );
+            }
+        };
 
         let mut selector_prompt = format!(
             "原始用户问题：\n{}\n\n以下是多个模型给出的回答，请选出质量最高的一条。\n\n",
@@ -905,7 +930,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
             model_config.api_base.clone(),
             model_config.api_key.clone(),
             timeouts.synthesizer_timeout_secs,
-        );
+        )?;
 
         let mut synthesis_prompt = format!(
             "原始用户问题：\n{}\n\n以下是多个AI模型对该问题的回答：\n\n",

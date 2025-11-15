@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -44,17 +44,17 @@ pub struct LLMClient {
 }
 
 impl LLMClient {
-    pub fn new(api_base: String, api_key: String, timeout_secs: u64) -> Self {
+    pub fn new(api_base: String, api_key: String, timeout_secs: u64) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
-            .unwrap();
+            .with_context(|| format!("Failed to build HTTP client for {}", api_base))?;
 
-        Self {
+        Ok(Self {
             client,
             api_base,
             api_key,
-        }
+        })
     }
 
     pub async fn chat_completion(

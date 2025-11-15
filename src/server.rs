@@ -702,7 +702,7 @@ async fn responses(
     );
 
     let prompt = extract_prompt_from_responses_body(&req).ok_or_else(|| {
-        AppError(anyhow::anyhow!(
+        AppError::bad_request(anyhow::anyhow!(
             "invalid request: missing input/messages/prompt/instructions"
         ))
     })?;
@@ -860,19 +860,49 @@ mod responses_tests {
     fn extract_prompt_returns_none_when_empty() {
         assert!(extract_prompt_from_responses_body(&json!({})).is_none());
     }
+
+    #[test]
+    fn app_error_bad_request_uses_400_status() {
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+
+        let response = super::AppError::bad_request(anyhow::anyhow!("bad request"))
+            .into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 }
 
 // 错误处理
-pub struct AppError(anyhow::Error);
+pub struct AppError {
+    status: StatusCode,
+    error: anyhow::Error,
+}
+
+impl AppError {
+    pub fn new(status: StatusCode, err: impl Into<anyhow::Error>) -> Self {
+        Self {
+            status,
+            error: err.into(),
+        }
+    }
+
+    pub fn bad_request(err: impl Into<anyhow::Error>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, err)
+    }
+}
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        tracing::error!("Application error: {:?}", self.0);
+        tracing::error!(
+            status = %self.status,
+            error = %self.error,
+            "Application error"
+        );
 
         (
-            StatusCode::INTERNAL_SERVER_ERROR,
+            self.status,
             Json(serde_json::json!({
-                "error": self.0.to_string()
+                "error": self.error.to_string()
             })),
         )
             .into_response()
@@ -884,6 +914,6 @@ where
     E: Into<anyhow::Error>,
 {
     fn from(err: E) -> Self {
-        Self(err.into())
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, err)
     }
 }
