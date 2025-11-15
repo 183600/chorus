@@ -218,7 +218,7 @@ impl WorkflowPlan {
             )
         })?;
 
-        let plan: Self = serde_json::from_value(value).map_err(|err| {
+        let mut plan: Self = serde_json::from_value(value).map_err(|err| {
             anyhow!(
                 "Failed to parse workflow integration JSON: {}",
                 err
@@ -231,6 +231,7 @@ impl WorkflowPlan {
                 err
             )
         })?;
+        plan.inherit_missing_synthesizers();
 
         Ok(plan)
     }
@@ -316,6 +317,32 @@ impl WorkflowPlan {
         }
 
         Ok(synthesizer_value.or(inherited_synthesizer))
+    }
+
+    pub fn inherit_missing_synthesizers(&mut self) {
+        self.apply_synthesizer_inheritance(None);
+    }
+
+    fn apply_synthesizer_inheritance(
+        &mut self,
+        inherited: Option<&WorkflowModelTarget>,
+    ) -> Option<WorkflowModelTarget> {
+        let current = match (&self.synthesizer, inherited) {
+            (Some(existing), _) => Some(existing.clone()),
+            (None, Some(parent)) => {
+                self.synthesizer = Some(parent.clone());
+                Some(parent.clone())
+            }
+            (None, None) => None,
+        };
+
+        for worker in self.workers.iter_mut() {
+            if let WorkflowWorker::Workflow(plan) = worker {
+                plan.apply_synthesizer_inheritance(current.as_ref());
+            }
+        }
+
+        current
     }
 
     fn is_nested_workflow(value: &JsonValue) -> bool {
@@ -555,10 +582,11 @@ where
             .map_err(|err| DeError::custom(format!("Failed to parse workflow json: {}", err))),
         PlanInput::PlainString(json) => WorkflowPlan::from_json_str(&json)
             .map_err(|err| DeError::custom(format!("Failed to parse workflow json: {}", err))),
-        PlanInput::Plan(plan) => {
+        PlanInput::Plan(mut plan) => {
             plan
                 .validate_structure()
                 .map_err(|err| DeError::custom(format!("Failed to parse workflow json: {}", err)))?;
+            plan.inherit_missing_synthesizers();
             Ok(plan)
         }
     }
