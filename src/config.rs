@@ -278,14 +278,14 @@ impl WorkflowPlan {
             }
         }
 
-        if synthesizer_value.is_none() {
+        let has_selector = map.contains_key("selector");
+
+        if synthesizer_value.is_none() && !has_selector {
             if let Some(inherited) = &inherited_synthesizer {
                 map.insert("synthesizer".to_string(), inherited.clone());
                 synthesizer_value = Some(inherited.clone());
             }
         }
-
-        let has_selector = map.contains_key("selector");
 
         if synthesizer_value.is_none() && !has_selector {
             return Err(anyhow!(
@@ -327,13 +327,17 @@ impl WorkflowPlan {
         &mut self,
         inherited: Option<&WorkflowModelTarget>,
     ) -> Option<WorkflowModelTarget> {
-        let current = match (&self.synthesizer, inherited) {
-            (Some(existing), _) => Some(existing.clone()),
-            (None, Some(parent)) => {
-                self.synthesizer = Some(parent.clone());
-                Some(parent.clone())
-            }
-            (None, None) => None,
+        let has_selector = self.selector.is_some();
+
+        let current = if let Some(existing) = &self.synthesizer {
+            Some(existing.clone())
+        } else if has_selector {
+            inherited.cloned()
+        } else if let Some(parent) = inherited {
+            self.synthesizer = Some(parent.clone());
+            self.synthesizer.clone()
+        } else {
+            None
         };
 
         for worker in self.workers.iter_mut() {
