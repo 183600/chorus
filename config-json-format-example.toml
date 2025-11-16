@@ -114,14 +114,15 @@ json = """
 
 # 工作流超时配置
 [workflow.timeouts]
-analyzer_timeout_secs = 30000
-worker_timeout_secs = 60000
-synthesizer_timeout_secs = 60000
+# 所有超时时间单位均为秒
+analyzer_timeout_secs = 30
+worker_timeout_secs = 60
+synthesizer_timeout_secs = 60
 
 # 域名特定的超时覆盖（可选）
 [workflow.domains]
 
 # 示例：为特定域名配置不同的超时
 # [workflow.domains."api.example.com"]
-# analyzer_timeout_secs = 40000
-# worker_timeout_secs = 80000
+# analyzer_timeout_secs = 40
+# worker_timeout_secs = 80

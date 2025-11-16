@@ -126,19 +126,20 @@ json = """{
 }"""
 
 [workflow.timeouts]
-analyzer_timeout_secs = 30000
-worker_timeout_secs = 60000
-synthesizer_timeout_secs = 60000
+# 所有超时时间单位均为秒
+analyzer_timeout_secs = 30
+worker_timeout_secs = 60
+synthesizer_timeout_secs = 60
 
 [workflow.domains]
 
 [workflow.domains."api.example.com"]
-analyzer_timeout_secs = 40000
-worker_timeout_secs = 80000
+analyzer_timeout_secs = 40
+worker_timeout_secs = 80
 
 [workflow.domains."app.example.com"]
-analyzer_timeout_secs = 20000
-synthesizer_timeout_secs = 30000
+analyzer_timeout_secs = 20
+synthesizer_timeout_secs = 30
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

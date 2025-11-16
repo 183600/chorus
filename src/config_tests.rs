@@ -758,9 +758,10 @@ port = 11435
 [workflow.domains]
 
 [workflow.timeouts]
-analyzer_timeout_secs = 30000
-worker_timeout_secs = 60000
-synthesizer_timeout_secs = 60000
+# 所有超时时间单位均为秒
+analyzer_timeout_secs = 30
+worker_timeout_secs = 60
+synthesizer_timeout_secs = 60
 
 [workflow-integration]
 json = """
@@ -834,9 +835,9 @@ json = """
         );
 
         assert!(cfg.workflow.domains.is_empty());
-        assert_eq!(cfg.workflow.timeouts.analyzer_timeout_secs, 30000);
-        assert_eq!(cfg.workflow.timeouts.worker_timeout_secs, 60000);
-        assert_eq!(cfg.workflow.timeouts.synthesizer_timeout_secs, 60000);
+        assert_eq!(cfg.workflow.timeouts.analyzer_timeout_secs, 30);
+        assert_eq!(cfg.workflow.timeouts.worker_timeout_secs, 60);
+        assert_eq!(cfg.workflow.timeouts.synthesizer_timeout_secs, 60);
     }
 
     #[test]
@@ -864,9 +865,10 @@ port = 11435
 [workflow.domains]
 
 [workflow.timeouts]
-analyzer_timeout_secs = 30000
-synthesizer_timeout_secs = 60000
-worker_timeout_secs = 60000
+# 所有超时时间单位均为秒
+analyzer_timeout_secs = 30
+synthesizer_timeout_secs = 60
+worker_timeout_secs = 60
 
 [workflow-integration]
 json = """
@@ -990,9 +992,10 @@ json = """
 }"""
 
 [workflow.timeouts]
-analyzer_timeout_secs = 30000
-worker_timeout_secs = 60000
-synthesizer_timeout_secs = 60000
+# 所有超时时间单位均为秒
+analyzer_timeout_secs = 30
+worker_timeout_secs = 60
+synthesizer_timeout_secs = 60
 
 [workflow.domains]
 "#;

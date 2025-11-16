@@ -244,6 +244,7 @@ analyzer_timeout_secs = 20
 synthesizer_timeout_secs = 30
 ```
 
+- 所有超时配置均以秒为单位。
 - 先应用全局超时，再按域名覆盖缺省字段。
 - 域名读取自模型 `api_base` 的主机名，支持部分字段覆盖。
 
