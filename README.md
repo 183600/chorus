@@ -92,7 +92,7 @@ cd chorus
 
 2. **配置 API Key**
 
-   编辑 `~/.config/chorus/config.toml` 文件，将所有 `your-api-key-here` 替换为真实的 iFlow API Key。你可以参考仓库中的 `config-example.toml` 或 `config-json-format-example.toml` 了解完整的配置选项和工作流示例。
+   编辑 `~/.config/chorus/config.toml` 文件，将所有 `your-api-key-here` 替换为真实的 API Key。你可以参考仓库中的 `config-example.toml` 或 `config-json-format-example.toml` 了解完整的配置选项和工作流示例。
 
 3. **编译项目**
 
