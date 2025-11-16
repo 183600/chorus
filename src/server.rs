@@ -15,6 +15,7 @@ use futures::{stream, StreamExt};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -993,9 +994,190 @@ async fn responses(
     let prompt_len = prompt.len();
 
     if stream_requested {
-        tracing::warn!(
-            "Responses stream requested but streaming is not yet implemented; returning single response payload"
-        );
+        let now = chrono::Utc::now();
+        let created = now.timestamp();
+        let resp_id = format!("resp_{}", now.timestamp_millis());
+        let msg_id = format!("msg_{}", now.timestamp_millis());
+        let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<String>();
+        let (result_tx, result_rx) = oneshot::channel();
+
+        let state_clone = state.clone();
+        let prompt_for_stream = prompt.clone();
+        tokio::spawn(async move {
+            let result = execute_workflow(
+                &state_clone,
+                prompt_for_stream,
+                include_workflow_details,
+                Some(chunk_tx.clone()),
+            )
+            .await;
+            drop(chunk_tx);
+            let _ = result_tx.send(result);
+        });
+
+        let initial_stream = futures::stream::once({
+            let resp_id = resp_id.clone();
+            let msg_id = msg_id.clone();
+            let model_name = model_name.clone();
+            let created = created;
+            async move {
+                let payload = serde_json::json!({
+                    "id": resp_id,
+                    "object": "response",
+                    "created": created,
+                    "model": model_name,
+                    "status": "in_progress",
+                    "output": [ {
+                        "id": msg_id,
+                        "type": "message",
+                        "role": "assistant",
+                        "content": Vec::<serde_json::Value>::new()
+                    } ],
+                    "output_text": "",
+                });
+                Ok::<Event, Infallible>(
+                    Event::default()
+                        .event("response.created")
+                        .json_data(payload)
+                        .unwrap(),
+                )
+            }
+        });
+
+        let content_index = Arc::new(AtomicUsize::new(0));
+
+        let chunk_stream =
+            UnboundedReceiverStream::new(chunk_rx).flat_map({
+                let resp_id = resp_id.clone();
+                let model_name = model_name.clone();
+                let created = created;
+                let content_index = content_index.clone();
+                move |segment| {
+                    let resp_id = resp_id.clone();
+                    let model_name = model_name.clone();
+                    let created = created;
+                    let content_index = content_index.clone();
+                    let pieces = if segment.is_empty() {
+                        vec![String::new()]
+                    } else {
+                        chunk_text(&segment, STREAM_CHUNK_SIZE)
+                    };
+                    stream::iter(pieces.into_iter().map(
+                        move |piece| -> Result<Event, Infallible> {
+                            let index = content_index.fetch_add(1, Ordering::SeqCst);
+                            let payload = serde_json::json!({
+                                "id": resp_id.clone(),
+                                "object": "response.output_text.delta",
+                                "created": created,
+                                "model": model_name.clone(),
+                                "output_index": 0,
+                                "content_index": index,
+                                "delta": {
+                                    "type": "output_text.delta",
+                                    "text": piece
+                                },
+                            });
+                            Ok(Event::default()
+                                .event("response.output_text.delta")
+                                .json_data(payload)
+                                .unwrap())
+                        },
+                    ))
+                }
+            });
+
+        let completion_stream = futures::stream::once({
+            let resp_id = resp_id.clone();
+            let msg_id = msg_id.clone();
+            let model_name = model_name.clone();
+            let prompt_len = prompt_len;
+            let created = created;
+            async move {
+                match result_rx.await {
+                    Ok(Ok((response_text, workflow_details))) => {
+                        tracing::debug!(
+                            "Generated responses stream payload (prompt {} bytes, response {} bytes)",
+                            prompt_len,
+                            response_text.len()
+                        );
+                        let mut payload = serde_json::json!({
+                            "id": resp_id.clone(),
+                            "object": "response",
+                            "created": created,
+                            "model": model_name.clone(),
+                            "status": "completed",
+                            "output": [ {
+                                "id": msg_id.clone(),
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [ { "type": "output_text", "text": response_text } ]
+                            } ],
+                            "output_text": response_text,
+                        });
+                        insert_workflow_field(&mut payload, &workflow_details);
+                        Ok::<Event, Infallible>(
+                            Event::default()
+                                .event("response.completed")
+                                .json_data(payload)
+                                .unwrap(),
+                        )
+                    }
+                    Ok(Err(err)) => {
+                        let error_message = err.error.to_string();
+                        tracing::error!(
+                            "Responses stream failed after prompt {} bytes: {}",
+                            prompt_len,
+                            error_message
+                        );
+                        let payload = serde_json::json!({
+                            "id": resp_id.clone(),
+                            "object": "response.error",
+                            "created": created,
+                            "model": model_name.clone(),
+                            "status": "failed",
+                            "error": error_message,
+                        });
+                        Ok::<Event, Infallible>(
+                            Event::default()
+                                .event("response.error")
+                                .json_data(payload)
+                                .unwrap(),
+                        )
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "Responses stream cancelled before completion (prompt {} bytes)",
+                            prompt_len
+                        );
+                        let payload = serde_json::json!({
+                            "id": resp_id.clone(),
+                            "object": "response.error",
+                            "created": created,
+                            "model": model_name.clone(),
+                            "status": "failed",
+                            "error": "stream cancelled",
+                        });
+                        Ok::<Event, Infallible>(
+                            Event::default()
+                                .event("response.error")
+                                .json_data(payload)
+                                .unwrap(),
+                        )
+                    }
+                }
+            }
+        });
+
+        let done_stream = futures::stream::once(async {
+            Ok::<Event, Infallible>(Event::default().data("[DONE]"))
+        });
+
+        let sse_stream = initial_stream
+            .chain(chunk_stream)
+            .chain(completion_stream)
+            .chain(done_stream);
+
+        return Ok(Sse::new(sse_stream).into_response());
     }
 
     let (response_text, workflow_details) =
