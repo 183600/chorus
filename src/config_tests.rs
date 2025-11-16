@@ -396,6 +396,93 @@ synthesizer_timeout_secs = 1
     }
 
     #[test]
+    fn nested_selector_does_not_inherit_parent_synthesizer() {
+        const CFG: &str = r#"
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+api_base = "https://api.example.com/v1"
+api_key = "k"
+name = "m1"
+
+[workflow-integration]
+json = """{
+  "analyzer": {
+    "ref": "m1"
+  },
+  "workers": [
+    {
+      "analyzer": {
+        "ref": "m1"
+      },
+      "workers": [
+        {
+          "analyzer": {
+            "ref": "m1"
+          },
+          "workers": [
+            {
+              "name": "m1"
+            }
+          ]
+        }
+      ],
+      "selector": {
+        "ref": "m1"
+      }
+    }
+  ],
+  "synthesizer": {
+    "ref": "m1"
+  }
+}"""
+
+[workflow.timeouts]
+analyzer_timeout_secs = 1
+worker_timeout_secs = 1
+synthesizer_timeout_secs = 1
+"#;
+
+        let cfg: Config = toml::from_str(CFG).unwrap();
+
+        let nested = match &cfg.workflow_integration.workers[0] {
+            WorkflowWorker::Workflow(plan) => plan.as_ref(),
+            other => panic!("expected nested workflow worker, got {:?}", other),
+        };
+
+        assert!(
+            nested.synthesizer.is_none(),
+            "nested workflow with selector should not inherit synthesizer"
+        );
+        assert_eq!(
+            nested
+                .selector
+                .as_ref()
+                .map(|t| t.model.as_str()),
+            Some("m1")
+        );
+
+        let parent_synth = cfg
+            .workflow_integration
+            .synthesizer
+            .as_ref()
+            .expect("parent synthesizer should be present");
+
+        let inner = match &nested.workers[0] {
+            WorkflowWorker::Workflow(plan) => plan.as_ref(),
+            other => panic!("expected inner workflow worker, got {:?}", other),
+        };
+
+        let inner_synth = inner
+            .synthesizer
+            .as_ref()
+            .expect("inner workflow should inherit synthesizer when selector absent");
+        assert_eq!(inner_synth.model, parent_synth.model);
+    }
+
+    #[test]
     fn nested_workflow_missing_synthesizer_inherits_parent() {
         const CFG: &str = r#"
 [server]
@@ -537,6 +624,72 @@ synthesizer_timeout_secs = 5
             .as_ref()
             .expect("deeper workflow should inherit synthesizer");
         assert_eq!(deeper_synth.model, parent_synth.model);
+    }
+
+    #[test]
+    fn inline_nested_selector_does_not_inherit_parent_synthesizer() {
+        const CFG: &str = r#"
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+api_base = "https://api.example.com/v1"
+api_key = "k"
+name = "m1"
+
+[workflow-integration]
+analyzer = { ref = "m1" }
+workers = [
+  { analyzer = { ref = "m1" }, workers = [
+      { analyzer = { ref = "m1" }, workers = [
+          { name = "m1" }
+      ] }
+  ], selector = { ref = "m1" } }
+]
+synthesizer = { ref = "m1" }
+
+[workflow.timeouts]
+analyzer_timeout_secs = 5
+worker_timeout_secs = 5
+synthesizer_timeout_secs = 5
+"#;
+
+        let cfg: Config = toml::from_str(CFG).unwrap();
+
+        let nested = match &cfg.workflow_integration.workers[0] {
+            WorkflowWorker::Workflow(plan) => plan.as_ref(),
+            other => panic!("expected nested workflow worker, got {:?}", other),
+        };
+
+        assert!(
+            nested.synthesizer.is_none(),
+            "nested inline workflow with selector should not inherit synthesizer"
+        );
+        assert_eq!(
+            nested
+                .selector
+                .as_ref()
+                .map(|t| t.model.as_str()),
+            Some("m1")
+        );
+
+        let parent_synth = cfg
+            .workflow_integration
+            .synthesizer
+            .as_ref()
+            .expect("parent synthesizer should be present");
+
+        let inner = match &nested.workers[0] {
+            WorkflowWorker::Workflow(plan) => plan.as_ref(),
+            other => panic!("expected inner workflow worker, got {:?}", other),
+        };
+
+        let inner_synth = inner
+            .synthesizer
+            .as_ref()
+            .expect("inner inline workflow should inherit synthesizer when selector absent");
+        assert_eq!(inner_synth.model, parent_synth.model);
     }
 
     #[test]
