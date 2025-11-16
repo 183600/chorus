@@ -45,6 +45,7 @@ pub struct CompletionResult {
     pub streamed: bool,
 }
 
+#[derive(Clone)]
 pub struct LLMClient {
     client: Client,
     api_base: String,
