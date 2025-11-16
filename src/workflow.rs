@@ -4,10 +4,27 @@ use anyhow::{anyhow, Result};
 use async_recursion::async_recursion;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{mpsc::UnboundedSender, RwLock};
 use url::Url;
 
 const DEFAULT_TEMPERATURE: f32 = 1.4;
+
+#[derive(Hash, Eq, PartialEq, Clone, Debug)]
+struct LlmClientCacheKey {
+    api_base: String,
+    api_key: String,
+    timeout_secs: u64,
+}
+
+impl LlmClientCacheKey {
+    fn new(api_base: &str, api_key: &str, timeout_secs: u64) -> Self {
+        Self {
+            api_base: api_base.to_string(),
+            api_key: api_key.to_string(),
+            timeout_secs,
+        }
+    }
+}
 
 pub type StreamCallback = UnboundedSender<String>;
 
@@ -88,6 +105,7 @@ pub struct SynthesizerDetails {
 pub struct WorkflowEngine {
     config: Config,
     model_configs: HashMap<String, ModelConfig>,
+    llm_clients: RwLock<HashMap<LlmClientCacheKey, LLMClient>>,
 }
 
 impl WorkflowEngine {
@@ -96,6 +114,7 @@ impl WorkflowEngine {
         Self {
             config,
             model_configs,
+            llm_clients: RwLock::new(HashMap::new()),
         }
     }
 
@@ -125,6 +144,30 @@ impl WorkflowEngine {
     ) -> Result<WorkflowResult> {
         self.run_plan_with_details(&self.config.workflow_integration, &prompt, 0, stream)
             .await
+    }
+
+    async fn get_llm_client(
+        &self,
+        api_base: &str,
+        api_key: &str,
+        timeout_secs: u64,
+    ) -> Result<LLMClient> {
+        let key = LlmClientCacheKey::new(api_base, api_key, timeout_secs);
+
+        {
+            let clients = self.llm_clients.read().await;
+            if let Some(client) = clients.get(&key) {
+                return Ok(client.clone());
+            }
+        }
+
+        let new_client = LLMClient::new(api_base.to_string(), api_key.to_string(), timeout_secs)?;
+
+        let mut clients = self.llm_clients.write().await;
+        Ok(clients
+            .entry(key)
+            .or_insert_with(|| new_client.clone())
+            .clone())
     }
 
     #[async_recursion]
@@ -440,11 +483,13 @@ impl WorkflowEngine {
 
         let domain = extract_domain_from_url(&model_config.api_base);
         let timeouts = self.config.effective_timeouts_for_domain(domain.as_deref());
-        let client = LLMClient::new(
-            model_config.api_base.clone(),
-            model_config.api_key.clone(),
-            timeouts.analyzer_timeout_secs,
-        )?;
+        let client = self
+            .get_llm_client(
+                &model_config.api_base,
+                &model_config.api_key,
+                timeouts.analyzer_timeout_secs,
+            )
+            .await?;
 
         let analysis_prompt = format!(
             r#"请分析以下用户提示，并为其推荐一个合适的temperature参数（0.0-2.0之间的浮点数）。
@@ -700,11 +745,13 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
 
         let domain = extract_domain_from_url(&model_config.api_base);
         let timeouts = self.config.effective_timeouts_for_domain(domain.as_deref());
-        let client = LLMClient::new(
-            model_config.api_base.clone(),
-            model_config.api_key.clone(),
-            timeouts.worker_timeout_secs,
-        )?;
+        let client = self
+            .get_llm_client(
+                &model_config.api_base,
+                &model_config.api_key,
+                timeouts.worker_timeout_secs,
+            )
+            .await?;
 
         let messages = vec![ChatMessage {
             role: "user".to_string(),
@@ -794,11 +841,14 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
 
         let domain = extract_domain_from_url(&model_config.api_base);
         let timeouts = self.config.effective_timeouts_for_domain(domain.as_deref());
-        let client = match LLMClient::new(
-            model_config.api_base.clone(),
-            model_config.api_key.clone(),
-            timeouts.synthesizer_timeout_secs,
-        ) {
+        let client = match self
+            .get_llm_client(
+                &model_config.api_base,
+                &model_config.api_key,
+                timeouts.synthesizer_timeout_secs,
+            )
+            .await
+        {
             Ok(client) => client,
             Err(err) => {
                 let message = err.to_string();
@@ -968,11 +1018,13 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
 
         let domain = extract_domain_from_url(&model_config.api_base);
         let timeouts = self.config.effective_timeouts_for_domain(domain.as_deref());
-        let client = LLMClient::new(
-            model_config.api_base.clone(),
-            model_config.api_key.clone(),
-            timeouts.synthesizer_timeout_secs,
-        )?;
+        let client = self
+            .get_llm_client(
+                &model_config.api_base,
+                &model_config.api_key,
+                timeouts.synthesizer_timeout_secs,
+            )
+            .await?;
 
         let mut synthesis_prompt = format!(
             "原始用户问题：\n{}\n\n以下是多个AI模型对该问题的回答：\n\n",
