@@ -10,30 +10,42 @@
 
 </div>
 
-## 📖 简介
+## 目录
+- [简介](#简介)
+- [核心特性](#核心特性)
+- [架构与工作流](#架构与工作流)
+- [快速上手](#快速上手)
+- [配置指南](#配置指南)
+- [API 使用](#api-使用)
+- [工作流执行流程](#工作流执行流程)
+- [开发者指南](#开发者指南)
+- [故障排除](#故障排除)
+- [安全建议](#安全建议)
+- [路线图](#路线图)
+- [贡献指南](#贡献指南)
+- [许可证](#许可证)
+- [联系方式](#联系方式)
 
-Chorus 是一个用 Rust 编写的高性能 LLM API 服务，提供与 Ollama 兼容的 API 接口。它的独特之处在于采用了**四步智能工作流**：
+## 简介
 
-1. **智能分析** - 分析用户问题并确定最佳 temperature 参数
-2. **多模型协同** - 按序调用 6 个不同的 LLM 模型生成响应
-3. **智能甄选** - 由 Selector 模型在多个回答中挑选最优候选答案
-4. **智能综合** - 将精选答案与其他信息综合成一个高质量的最终答案
+Chorus 是一个使用 Rust 和 Tokio 构建的高性能 LLM API 聚合服务，提供与 Ollama/OpenAI 兼容的接口。它通过四步智能工作流（分析 → 协同 → 甄选 → 综合）来组合多种模型的优势，产出更专业、可靠的回答。
 
-这种方法结合了多个模型的优势，提供更准确、更全面的回答。
+- 面向开发者：一套配置灵活、易于集成的统一 API。
+- 面向团队：可同步多个模型的能力，不断提升回答质量。
+- 面向生产：内置日志、超时和错误处理机制，易于观测和维护。
 
-## ✨ 特性
+## 核心特性
 
-- 🚀 **高性能** - 基于 Rust 和 Tokio 异步运行时
-- 🔄 **智能工作流** - 四步式流程（分析 → 协同 → 甄选 → 综合）确保输出质量
-- 🏆 **最佳答案甄选** - Selector 模型自动评估并选出最优回复
-- 🎯 **自适应参数** - 自动分析并设置最优 temperature
-- 🤝 **多模型协同** - 支持 6 个不同的 LLM 模型
-- 🔌 **兼容 Ollama** - API 接口与 Ollama 兼容
-- ⚙️ **灵活配置** - TOML 格式配置文件
-- 📝 **详细日志** - 完整的请求追踪和错误日志
-- 🛡️ **错误处理** - 健壮的错误处理机制
+- 🚀 **高性能**：基于 Rust + Tokio 的异步运行时，启动快、占用低。
+- 🎼 **四步智能工作流**：分析器、工作节点、选择器、综合器协同工作。
+- 🎯 **自适应 Temperature**：自动根据问题类型推荐最优 temperature，亦可手动覆盖。
+- 🤝 **多模型协作**：一次请求可串行/递归调用多个模型，降低单点风险。
+- 🧠 **最佳答案甄选**：Selector 自动在多个回复中挑选最优候选。
+- 🔌 **Ollama/OpenAI 兼容**：可直接连接 Cherry Studio、OpenAI SDK 等常见工具。
+- 🧾 **可观测性**：详细的工作流执行日志，支持返回完整执行轨迹。
+- 🔧 **灵活配置**：TOML + JSON 混合配置，自由定义嵌套工作流、超时与域名覆盖。
 
-## 🏗️ 架构
+## 架构与工作流
 
 ```
 ┌─────────────┐
@@ -42,224 +54,189 @@ Chorus 是一个用 Rust 编写的高性能 LLM API 服务，提供与 Ollama �
        │ HTTP Request
        ▼
 ┌─────────────────────────────────────┐
-│         Chorus Server               │
+│           Chorus Server             │
 │  ┌───────────────────────────────┐  │
-│  │   Step 1: Prompt Analysis     │  │
-│  │   Model: GLM-4.6              │  │
-│  │   Output: Temperature         │  │
+│  │ Step 1: Prompt Analysis       │  │
+│  │  • 决定 temperature 与策略      │  │
 │  └───────────┬───────────────────┘  │
 │              ▼                       │
 │  ┌───────────────────────────────┐  │
-│  │   Step 2: Multi-Model Work    │  │
-│  │   Models:                     │  │
-│  │   • deepseek-v3.2             │  │
-│  │   • kimi-k2-0905             │  │
-│  │   • glm-4.6                  │  │
-│  │   • qwen3-coder              │  │
-│  │   • deepseek-v3.1            │  │
-│  │   • qwen3-max                │  │
+│  │ Step 2: Multi-Model Workers   │  │
+│  │  • 串行调用多个模型             │  │
+│  │  • 支持嵌套子工作流             │  │
 │  └───────────┬───────────────────┘  │
 │              ▼                       │
 │  ┌───────────────────────────────┐  │
-│  │   Step 3: Response Selection  │  │
-│  │   Model: Configured Selector  │  │
-│  │          (default qwen3-max)  │  │
-│  │   Output: Best Candidate      │  │
+│  │ Step 3: Response Selector     │  │
+│  │  • 评估并挑选最佳候选           │  │
 │  └───────────┬───────────────────┘  │
 │              ▼                       │
 │  ┌───────────────────────────────┐  │
-│  │   Step 4: Response Synthesis  │  │
-│  │   Model: qwen3-max            │  │
-│  │   Output: Final Answer        │  │
+│  │ Step 4: Response Synthesizer  │  │
+│  │  • 综合答案并输出               │  │
 │  └───────────────────────────────┘  │
 └─────────────────────────────────────┘
 ```
 
-## 🚀 快速开始
+| 阶段 | 角色 | 默认模型 | 主要职责 |
+| --- | --- | --- | --- |
+| Step 1 | Analyzer | `glm-4.6` | 判断问题类型、推导 temperature 等全局策略。 |
+| Step 2 | Workers | `[[model]]` 列表 | 按顺序执行，支持嵌套子工作流和自定义超时。 |
+| Step 3 | Selector | 默认 `qwen3-max` | 评估全部候选回复并挑选最优答案。 |
+| Step 4 | Synthesizer | `qwen3-max` | 将最佳候选与补充信息融合成最终响应。 |
 
-### 前置要求
+## 快速上手
 
-- Rust 1.75 或更高版本
+### 环境要求
+
+- Rust 1.75 或更新版本
+- 可访问互联网（调用第三方 LLM）
+- 已获取可用的模型 API Key
 
 ### 安装
-
-1. **克隆仓库**
 
 ```bash
 git clone https://github.com/yourusername/chorus.git
 cd chorus
 ```
 
-2. **配置 API Key**
+### 准备配置
 
-   编辑 `~/.config/chorus/config.toml` 文件，将所有 `your-api-key-here` 替换为真实的 API Key。你可以参考仓库中的 `config-example.toml` 或 `config-json-format-example.toml` 了解完整的配置选项和工作流示例。
+1. 创建配置目录：
+   ```bash
+   mkdir -p ~/.config/chorus
+   ```
+2. 复制示例配置并根据实际身份验证信息修改：
+   ```bash
+   cp config-example.toml ~/.config/chorus/config.toml
+   ```
+3. 将 `your-api-key-here` 等占位符替换为真实的 API Key。
+4. 推荐最小配置示例：
+   ```toml
+   [server]
+   host = "127.0.0.1"
+   port = 11435
 
-3. **编译项目**
+   [[model]]
+   name = "qwen3-max"
+   api_base = "https://apis.iflow.cn/v1"
+   api_key = "your-api-key"
+   auto_temperature = true
+
+   [workflow-integration]
+   json = """{
+     "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+     "workers": [{"name": "qwen3-max"}],
+     "synthesizer": {"ref": "qwen3-max"},
+     "selector": {"ref": "qwen3-max"}
+   }"""
+
+   [workflow.timeouts]
+   analyzer_timeout_secs = 30
+   worker_timeout_secs = 60
+   synthesizer_timeout_secs = 60
+   ```
+
+> 提示：还可以参考 `config-json-format-example.toml` 获取嵌套工作流、域名覆盖等高级用法。
+
+### 启动服务
 
 ```bash
 # 开发模式
-cargo build
+RUST_LOG=info cargo run
 
 # 生产模式（优化编译）
 cargo build --release
+RUST_LOG=info ./target/release/chorus
 ```
 
-4. **运行服务**
+服务默认监听 `http://127.0.0.1:11435`。
+
+### 快速验证
 
 ```bash
-# 开发模式
-cargo run
+curl -H 'Content-Type: application/json' \
+  http://127.0.0.1:11435/api/generate \
+  -d '{"model":"chorus","prompt":"你好"}'
 
-# 生产模式
-./target/release/chorus
+curl -H 'Content-Type: application/json' \
+  http://127.0.0.1:11435/api/chat \
+  -d '{"model":"chorus","messages":[{"role":"user","content":"你好"}]}'
 ```
 
-服务将在 `http://localhost:11435` 启动。
+若需查看完整工作流执行轨迹，可在请求体中添加 `"include_workflow": true`。
 
-## ⚙️ 配置说明
+## 配置指南
 
-### 服务器配置
+### 服务器设置
 
 ```toml
 [server]
-host = "127.0.0.1"  # 监听地址
-port = 11435         # 监听端口
+host = "127.0.0.1"  # 服务监听地址
+port = 11435          # 服务监听端口
 ```
 
-### 模型配置
+将 `host` 修改为 `0.0.0.0` 即可允许局域网访问。部署到公网时建议配合反向代理和认证机制。
 
-为每个模型添加配置块：
+### 模型定义
 
 ```toml
 [[model]]
+name = "qwen3-max"          # 唯一名称，用于 workflow 引用
 api_base = "https://apis.iflow.cn/v1"
 api_key = "your-api-key"
-name = "model-name"
-# temperature = 1.4           # 可选：固定 temperature 值（0.0-2.0）
-# auto_temperature = false    # 可选：是否由大模型自动选择 temperature
+auto_temperature = true      # 可选：允许 analyzer 自动调节
+# temperature = 0.8          # 可选：强制使用固定 temperature（高于 auto_temperature 优先级）
 ```
 
-#### Temperature 配置说明
+可按需新增多个 `[[model]]` 块，同时支持不同供应商的 API 地址。
 
-Chorus 支持三种 temperature 配置方式：
+#### Temperature 策略
 
-1. **固定 temperature 值**
-   ```toml
-   [[model]]
-   name = "qwen3-max"
-   temperature = 0.8  # 固定使用 0.8
-   ```
-   - 适用场景：明确知道该模型适合的 temperature 值
-   - 取值范围：0.0 - 2.0
-   - 效果：
-     - `0.0-0.3`：非常确定和保守，适合精确答案
-     - `0.4-0.7`：平衡输出，适合大多数场景
-     - `0.8-1.2`：更有创造性，适合创意写作
-     - `1.3-2.0`：非常随机和创造性
+- `temperature`：使用明确的固定值（0.0 ~ 2.0）。
+- `auto_temperature = true`：交给 Analyzer 根据问题自动决策。
+- 未配置时默认使用 `1.4`。
+- 优先级：固定值 > 自动决策 > 默认值。
 
-2. **自动 temperature 选择**
-   ```toml
-   [[model]]
-   name = "glm-4.6"
-   auto_temperature = true  # 由分析器自动决定
-   ```
-   - 适用场景：希望根据用户问题类型动态调整
-   - 工作原理：分析器模型会根据问题特点推荐最佳 temperature
+### 工作流配置
 
-3. **使用默认值**
-   ```toml
-   [[model]]
-   name = "deepseek-v3.2"
-   # 不设置任何 temperature 参数
-   ```
-   - 默认行为：使用 1.4 作为 temperature
-
-**优先级规则**：
-- 如果设置了 `temperature`，则使用该固定值（忽略 `auto_temperature`）
-- 如果只设置了 `auto_temperature = true`，则由分析器决定
-- 如果两者都未设置，则使用默认值 1.4
-
-**示例配置**：查看 `config-example.toml` 了解更多配置示例。
-
-### 工作流配置（支持嵌套节点与域名超时覆盖）
+`[workflow-integration]` 使用 JSON 描述完整的嵌套工作流结构：
 
 ```toml
 [workflow-integration]
 json = """{
-  "analyzer": {
-    "ref": "glm-4.6",
-    "auto_temperature": true
-  },
+  "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
   "workers": [
+    {"name": "deepseek-v3.2", "temperature": 1.0},
     {
-      "name": "deepseek-v3.2",
-      "temperature": 1
-    },
-    {
-      "analyzer": {
-        "ref": "glm-4.6",
-        "auto_temperature": true
-      },
+      "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
       "workers": [
-        {
-          "name": "kimi-k2-0905",
-          "temperature": 1
-        },
-        {
-          "name": "deepseek-v3.2",
-          "temperature": 1
-        },
-        {
-          "name": "glm-4.6",
-          "temperature": 1
-        },
-        {
-          "analyzer": {
-            "ref": "glm-4.6",
-            "auto_temperature": true
-          },
-          "workers": [
-            {
-              "name": "qwen3-coder",
-              "temperature": 1
-            },
-            {
-              "name": "deepseek-v3.1",
-              "temperature": 1
-            },
-            {
-              "name": "qwen3-max",
-              "temperature": 1
-            }
-          ],
-          "synthesizer": {
-            "ref": "qwen3-max"
-          }
-        }
+        {"name": "kimi-k2-0905"},
+        {"name": "qwen3-coder", "temperature": 0.6}
       ],
-      "synthesizer": {
-        "ref": "qwen3-max"
-      }
+      "synthesizer": {"ref": "qwen3-max"}
     }
   ],
-  "synthesizer": {
-    "ref": "qwen3-max"
-  },
-  "selector": {
-    "ref": "qwen3-max"
-  }
+  "selector": {"ref": "qwen3-max"},
+  "synthesizer": {"ref": "qwen3-max"}
 }"""
+```
 
-# 全局超时（必填）
+要点：
+
+- `analyzer` / `selector` / `synthesizer` 使用 `ref` 引用上方的 `[[model]]` 名称。
+- `workers` 可混合模型节点与子工作流，实现递归流程。
+- JSON 内的 `temperature` / `auto_temperature` 优先级高于模型默认值。
+
+### 超时与域名覆盖
+
+```toml
 [workflow.timeouts]
-analyzer_timeout_secs = 30         # 分析器默认超时（秒）
-worker_timeout_secs = 60           # 工作者默认超时（秒）
-synthesizer_timeout_secs = 60      # 综合器默认超时（秒）
+analyzer_timeout_secs = 30
+worker_timeout_secs = 60
+synthesizer_timeout_secs = 60
 
-# 域名覆盖：根据模型 api_base 的域名进行部分或全部覆盖
-[workflow.domains]
 [workflow.domains."api.example.com"]
-analyzer_timeout_secs = 40
 worker_timeout_secs = 80
 
 [workflow.domains."app.example.com"]
@@ -267,359 +244,118 @@ analyzer_timeout_secs = 20
 synthesizer_timeout_secs = 30
 ```
 
-说明：
-- `[workflow-integration]` 节点现在通过 `json` 字段保存完整的工作流结构，推荐使用三引号 `"""` 包裹多行 JSON，保证可读性。
-- 分析器、选择器与综合器节点通过 `ref` 字段引用上方 `[[model]]` 中声明的模型名称；普通工作节点使用 `name` 字段引用模型。
-- `selector` 节点用于在多个工作节点的回答中挑选最佳候选，可选但推荐配置。
-- `workers` 数组可以混合模型节点和子工作流：只要对象内包含 `analyzer` / `workers` / `synthesizer` 字段（可选 `selector`），就会被视为一个递归子工作流。
-- JSON 节点内的 `temperature` / `auto_temperature` 会优先于模型默认值；未设置时回落到模型配置或分析器产出的温度。
-- 超时规则保持不变：先使用 `[workflow.timeouts]` 的全局默认值，再按域名覆盖缺省字段。
+- 先应用全局超时，再按域名覆盖缺省字段。
+- 域名读取自模型 `api_base` 的主机名，支持部分字段覆盖。
 
-> 升级提示：若检测到旧版的 `workflow-integration` 配置（如 analyzer/workers/synthesizer 表格，或包含 `analyzer_model` / `worker_models` / `synthesizer_model` 字段），Chorus 会自动迁移到 `[workflow-integration].json` 格式，并在同目录生成 `config.toml.bak` 备份文件。
+> 升级提醒：检测到旧版 workflow 配置时，Chorus 会自动迁移为 `[workflow-integration].json` 格式，并在同目录生成 `config.toml.bak` 备份文件。
 
-## 📚 API 文档
+## API 使用
 
-### 1. 生成接口（Generate API）
+### `/api/generate`
 
-类似于 Ollama 的 `/api/generate` 接口。
-
-**请求**
+- **方法**：`POST`
+- **说明**：与 Ollama `generate` 接口兼容，支持文本生成和可选流式输出（SSE）。
 
 ```bash
 curl -H 'Content-Type: application/json' \
-  http://localhost:11435/api/generate \
+  http://127.0.0.1:11435/api/generate \
   -d '{
     "model": "chorus",
-    "prompt": "你好"
+    "prompt": "写一段 Rust 程序打印 Hello World",
+    "stream": false,
+    "include_workflow": true
   }'
 ```
 
-**参数**
-
-| 参数 | 类型 | 必需 | 描述 |
-|------|------|------|------|
-| `model` | string | 否 | 模型名称（默认: "chorus"） |
-| `prompt` | string | 是 | 用户提示词 |
-| `stream` | boolean | 否 | 是否使用 Server-Sent Events 流式返回（默认: false） |
-| `include_workflow` | boolean | 否 | 是否在响应中返回工作流执行详情（默认: false） |
-
-**响应（使用示例配置运行时会返回 mock 数据）**
-
+响应示例：
 ```json
 {
   "model": "chorus",
   "created_at": "2025-10-20T13:23:23.284964394+00:00",
-  "response": "mock reply",
-  "done": true
-}
-```
-> 提示：使用真实 API Key 时，这里会返回实际模型的回答。
-
-若请求体中将 `"include_workflow": true`，响应会包含一个 `workflow` 字段，描述分析器、工作节点、选择器和综合器的执行详情。例如：
-
-```json
-{
-  "model": "chorus",
-  "created_at": "2025-10-20T13:23:23.284964394+00:00",
-  "response": "mock reply",
+  "response": "...",
   "done": true,
-  "workflow": {
-    "analyzer": {
-      "model": "glm-4.6",
-      "temperature": 1.2,
-      "auto_temperature": true
-    },
-    "workers": [
-      {
-        "name": "glm-4.6",
-        "temperature": 1.2,
-        "response": "mock worker reply",
-        "success": true,
-        "error": null
-      }
-    ],
-    "selector": {
-      "model": "glm-4.6",
-      "temperature": 1.0,
-      "selected_index": 1,
-      "selected_worker": "glm-4.6",
-      "selected_response": "mock worker reply",
-      "reasoning": "mock reasoning",
-      "success": true,
-      "error": null
-    },
-    "synthesizer": {
-      "model": "glm-4.6",
-      "temperature": 1.2
-    }
-  }
+  "workflow": { "analyzer": {"model": "glm-4.6", "temperature": 0.7}, ... }
 }
 ```
 
-### 2. 聊天接口（Chat API）
+当 `stream=true` 时，接口会以 SSE 推送分段响应。
 
-类似于 Ollama 的 `/api/chat` 接口。
+### `/api/chat`
 
-**请求**
-
-```bash
-curl -H 'Content-Type: application/json' \
-  http://localhost:11435/api/chat \
-  -d '{
-    "model": "chorus",
-    "messages": [
-      {
-        "role": "user",
-        "content": "你好"
-      }
-    ]
-  }'
-```
-
-**返回工作流详情的请求**
+- **方法**：`POST`
+- **说明**：兼容 Ollama `chat` 接口，支持对话上下文与流式输出。
 
 ```bash
 curl -H 'Content-Type: application/json' \
-  http://localhost:11435/api/chat \
+  http://127.0.0.1:11435/api/chat \
   -d '{
     "model": "chorus",
     "messages": [
-      {
-        "role": "user",
-        "content": "你好"
-      }
+      {"role": "system", "content": "你是一名 Rust 专家"},
+      {"role": "user", "content": "讲解一下所有权模型"}
     ],
     "include_workflow": true
   }'
 ```
 
-**参数**
+### OpenAI 兼容接口
 
-| 参数 | 类型 | 必需 | 描述 |
-|------|------|------|------|
-| `model` | string | 否 | 模型名称 |
-| `messages` | array | 是 | 消息历史数组 |
-| `stream` | boolean | 否 | 是否使用 Server-Sent Events 流式返回（默认: false） |
-| `include_workflow` | boolean | 否 | 是否在响应中返回工作流执行详情（默认: false） |
+Chorus 同时实现了一组与 OpenAI API 保持兼容的端点：
 
-**响应（示例配置下的 mock 数据）**
+| Endpoint | 对应功能 |
+| --- | --- |
+| `POST /v1/chat/completions` | 等同于 `/api/chat`，支持流式增量输出。 |
+| `POST /v1/completions` | 等同于 `/api/generate`，支持字符串或字符串数组 prompt。 |
+| `POST /v1/responses` | 兼容 OpenAI Responses API（目前以非流式方式返回）。 |
+| `GET /v1/models` | 返回符合 OpenAI 规范的模型列表。 |
 
-```json
-{
-  "model": "chorus",
-  "created_at": "2025-10-20T13:27:54.677058219+00:00",
-  "message": {
-    "role": "assistant",
-    "content": "mock reply"
-  },
-  "done": true
-}
-```
-> 提示：使用真实 API Key 时，这里会返回实际模型的回答。
+#### Cherry Studio 快速配置
 
-### 3. 列出模型（List Models）
+1. 打开 **Settings → Provider**。
+2. 选择 **Ollama** 作为提供商。
+3. 模型名称填写 `chorus`（或任意自定义名称）。
+4. API 地址设置为 `http://127.0.0.1:11435`。
 
-**请求**
+保存后即可在 Cherry Studio 中直接调用 Chorus。
 
-```bash
-curl http://localhost:11435/api/tags
-```
+## 工作流执行流程
 
-**响应**
+一次完整的请求大致包含以下阶段：
 
-```json
-{
-  "models": [
-    {
-      "name": "qwen3-max",
-      "model": "qwen3-max",
-      "modified_at": "2024-01-15T10:30:00Z"
-    },
-    ...
-  ]
-}
-```
+1. **智能分析**：Analyzer 根据提示词类型给出合适的 temperature 与策略。
+2. **多模型协同**：按照配置顺序依次调用多个模型节点，失败的节点会记录错误但不影响后续执行。
+3. **候选甄选**：Selector 基于评分、理由等维度选出最优候选答案，并可返回完整评估信息。
+4. **答案综合**：Synthesizer 将最佳候选与其他辅助信息整合，输出结构化的最终回复。
 
-### 4. 健康检查
+可选地，响应内的 `workflow` 字段会详细记录每一步的执行结果、耗时与错误信息，便于调试和优化。
 
-**请求**
-
-```bash
-curl http://localhost:11435/
-```
-
-**响应**
-
-```json
-{
-  "status": "ok",
-  "service": "Chorus",
-  "version": "0.1.0"
-}
-```
-
-### 5. OpenAI 兼容接口
-
-Chorus 也提供了一组与 OpenAI API 兼容的端点，方便 Cherry Studio、OpenAI SDK 等工具直接接入：
-
-- `POST /v1/chat/completions`：功能等同于 `/api/chat`，支持 `stream`，并按照 OpenAI 增量格式推送消息。
-- `POST /v1/completions`：功能等同于 `/api/generate`，接受字符串或字符串数组形式的 `prompt`。
-- `POST /v1/responses`：兼容新版 Responses API。
-- `GET /v1/models`：返回符合 OpenAI 规范的模型列表。
-
-#### `/v1/responses` 调用示例
-
-```bash
-curl -X POST http://localhost:11435/v1/responses \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "chorus",
-    "instructions": "你是一名乐于助人的中文助理。",
-    "input": "给我三条提高 Rust 编程效率的建议"
-  }'
-```
-
-上面示例展示了如何通过 HTTP 调用 Responses API：
-
-- `instructions` 字段用于描述系统角色或总体目标；
-- 可以通过 `messages` 数组追加多轮历史；
-- `input` 字段可直接提供当前问题文本，数组或对象形式也会被自动展开。
-
-如果希望额外查看工作流执行详情，可以在请求体中加入 `"include_workflow": true`，服务会在响应中附带 `workflow` 字段。
-
-响应示例：
-
-```json
-{
-  "id": "resp_1723467890123",
-  "object": "response",
-  "created": 1723467890,
-  "model": "chorus",
-  "status": "completed",
-  "output": [
-    {
-      "id": "msg_1723467890123",
-      "type": "message",
-      "role": "assistant",
-      "content": [
-        {
-          "type": "output_text",
-          "text": "..."
-        }
-      ]
-    }
-  ],
-  "output_text": "..."
-}
-```
-
-> 注意：当前 `/v1/responses` 尚未实现流式输出，即使请求体中包含 `stream` 字段，也会以一次性响应返回最终结果。
-
-使用这些接口时，将客户端的 Base URL 配置为 `http://localhost:11435/v1` 即可。如果启用了流式模式，Chorus 会自动把最终答案拆分成多个事件发送，Cherry Studio 能够实时刷新回答内容。
-
-### Cherry Studio 配置示例
-
-在 Cherry Studio 中使用 Chorus：
-
-1. 打开 Settings → Provider
-2. 选择 **Ollama** 作为提供商
-3. 模型名称可填写任意值（建议填写 `chorus` 以便识别）
-4. 将 API 地址设置为 `http://localhost:11435`
-
-保存后即可直接在 Cherry Studio 中调用 Chorus。
-
-## 🔄 工作流程详解
-
-### 步骤 1：智能分析
-
-Chorus 首先分析用户的提示词，判断问题类型并决定最适合的 temperature 参数：
-
-- **创意性问题**（如写作、头脑风暴）→ 较高 temperature (1.0-1.5)
-- **事实性问题**（如知识问答）→ 较低 temperature (0.3-0.7)
-- **代码生成**（如编程任务）→ 低 temperature (0.1-0.5)
-
-### 步骤 2：多模型协同
-
-使用分析得出的 temperature，**按顺序**调用多个不同的模型，每个模型独立处理问题，如果某个模型失败，会继续执行其他模型。
-
-### 步骤 3：智能综合
-
-综合所有模型的响应，生成最终答案：
-
-- 提取各模型回答的优点
-- 去除重复和冗余信息
-- 整合成连贯、准确的答案
-- 确保逻辑清晰、结构完整
-
-## 🛠️ 开发指南
+## 开发者指南
 
 ### 项目结构
 
 ```
 Chorus/
-├── Cargo.toml           # 项目依赖配置
-├── ~/.config/chorus/config.toml # 用户级服务配置文件（默认优先）
-├── README.md            # 项目文档
-└── src/
-    ├── main.rs          # 程序入口
-    ├── config.rs        # 配置管理
-    ├── server.rs        # HTTP 服务器
-    ├── llm.rs           # LLM 客户端
-    └── workflow.rs      # 工作流引擎
+├── Cargo.toml
+├── README.md
+├── src/
+│   ├── main.rs          # 程序入口
+│   ├── config.rs        # 配置解析与校验
+│   ├── server.rs        # HTTP 服务及路由
+│   ├── llm.rs           # 对接外部 LLM 的客户端
+│   └── workflow.rs      # 工作流调度逻辑
+└── ~/.config/chorus/    # 默认用户级配置目录
 ```
 
-### 运行测试（含域名覆盖单元测试）
+### 常用命令
 
 ```bash
-cargo test
-# 关键测试位置：src/config_tests.rs（覆盖全局、完整域名覆盖、部分覆盖三种场景）
-```
-
-### 测试指南
-
-- 单元测试
-
-```bash
-cargo test
-```
-
-- 启动与健康检查（先在 ~/.config/chorus/config.toml 配好 api_key）
-
-```bash
-RUST_LOG=info cargo run
-curl http://localhost:11435/
-```
-
-- 端到端验证
-
-```bash
-curl -H 'Content-Type: application/json' \
-  http://localhost:11435/api/generate \
-  -d '{"model":"chorus","prompt":"hello"}'
-
-curl -H 'Content-Type: application/json' \
-  http://localhost:11435/api/chat \
-  -d '{"model":"chorus","messages":[{"role":"user","content":"hi"}]}'
-```
-
-- 代码检查（可选）
-
-```bash
-cargo fmt -- --check
-cargo clippy -D warnings
-```
-
-
-### 代码格式化
-
-```bash
-cargo fmt
-```
-
-### 代码检查
-
-```bash
-cargo clippy
+cargo build            # 编译（开发模式）
+cargo build --release  # 编译（发布模式）
+cargo run              # 运行服务
+cargo test             # 执行单元测试（含域名覆盖测试）
+cargo fmt              # 格式化代码
+cargo fmt -- --check   # 检查格式
+cargo clippy -D warnings  # 静态检查
 ```
 
 ### 启用调试日志
@@ -628,110 +364,49 @@ cargo clippy
 RUST_LOG=debug cargo run
 ```
 
-## 📊 性能优化
+## 故障排除
 
-### 生产环境建议
+| 场景 | 提示信息 | 排查建议 |
+| --- | --- | --- |
+| API Key 无效 | `LLM API request failed with status 401` | 检查 `api_key` 是否正确、是否具备访问权限。 |
+| 请求超时 | `request timeout` | 增加 `workflow.timeouts` 或域名覆盖，确认网络状况。 |
+| 端口冲突 | `Address already in use` | 修改配置端口或释放 11435 端口。 |
+| 所有工作节点失败 | `All worker models failed` | 核对网络、配额或模型状态，并查看 `RUST_LOG=debug` 日志。 |
 
-1. **使用 Release 模式编译**
+## 安全建议
 
-```bash
-cargo build --release
-```
+1. **保护凭据**：不要将 API Key 提交到版本库，推荐使用环境变量或密钥管理服务。
+2. **网络安全**：生产环境中通过防火墙或反向代理限制访问来源，启用 TLS。
+3. **访问控制**：保留默认的 `127.0.0.1` 监听地址或实现额外的认证机制。
+4. **日志合规**：在日志中避免打印敏感提示词或用户输入。
 
-2. **调整超时时间**
+## 路线图
 
-根据实际网络情况调整 `~/.config/chorus/config.toml` 中的超时配置：
+- [ ] 支持完整的流式 Responses API
+- [ ] 启用请求级缓存与重试策略
+- [ ] 自定义工作流的图形化编辑器
+- [ ] Prometheus 指标与可观测性增强
+- [ ] 负载均衡与集群调度能力
+- [ ] 更多 LLM 供应商适配器
+- [ ] 官方 Docker 镜像与部署脚本
 
-```toml
-[workflow.timeouts]
-analyzer_timeout_secs = 30
-worker_timeout_secs = 120    # 如果网络较慢，可以增加
-synthesizer_timeout_secs = 90
-```
+## 贡献指南
 
-3. **日志级别**
+欢迎社区贡献力量！
 
-生产环境建议使用 `info` 级别：
+1. Fork 本仓库。
+2. 创建特性分支：`git checkout -b feature/awesome-feature`。
+3. 提交变更：`git commit -m 'Add awesome feature'`。
+4. 推送分支：`git push origin feature/awesome-feature`。
+5. 在 GitHub 上发起 Pull Request，并描述变更背景、测试情况。
 
-```bash
-RUST_LOG=info ./target/release/chorus
-```
+> 注：提交前请确保通过 `cargo fmt` 与 `cargo test`，并附上必要的文档更新。
 
-## 🐛 故障排除
+## 许可证
 
-### 问题 1：API Key 无效
+本项目采用 MIT 许可证，详见 [LICENSE](LICENSE)。
 
-**错误信息**：`LLM API request failed with status 401`
-
-**解决方案**：检查 `~/.config/chorus/config.toml` 中的 `api_key` 是否正确配置。
-
-### 问题 2：超时错误
-
-**错误信息**：`request timeout`
-
-**解决方案**：增加 `~/.config/chorus/config.toml` 中的超时时间配置。
-
-### 问题 3：端口被占用
-
-**错误信息**：`Address already in use`
-
-**解决方案**：修改 `~/.config/chorus/config.toml` 中的端口号，或停止占用 11435 端口的程序。
-
-### 问题 4：所有工作模型失败
-
-**错误信息**：`All worker models failed`
-
-**解决方案**：
-- 检查网络连接
-- 确认 API Key 有足够的配额
-- 查看详细日志 `RUST_LOG=debug cargo run`
-
-## 🔒 安全建议
-
-1. **保护 API Key**
-   - 不要将 API Key 提交到版本控制
-   - 使用环境变量存储敏感信息
-
-2. **网络安全**
-   - 在生产环境中配置防火墙
-   - 考虑使用反向代理（如 Nginx）
-
-3. **访问控制**
-   - 限制服务监听地址（默认 127.0.0.1 仅本地访问）
-   - 实现 API 认证机制（可扩展）
-
-## 🗺️ 路线图
-
-- [ ] 支持流式响应（SSE）
-- [ ] 添加请求缓存机制
-- [ ] 支持自定义工作流配置
-- [ ] 添加 Prometheus 监控指标
-- [ ] 实现负载均衡
-- [ ] 支持更多 LLM 提供商
-- [ ] Web UI 管理界面
-- [ ] Docker 容器化
-
-## 🤝 贡献
-
-欢迎贡献代码！请遵循以下步骤：
-
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
-
-## 🙏 致谢
-
-- [Ollama](https://github.com/ollama/ollama) - API 设计灵感
-- [iFlow](https://apis.iflow.cn/) - LLM API 提供商
-- Rust 社区的所有贡献者
-
-## 📧 联系方式
+## 联系方式
 
 - 问题反馈：[GitHub Issues](https://github.com/yourusername/chorus/issues)
 - 邮箱：your.email@example.com
@@ -740,7 +415,7 @@ RUST_LOG=info ./target/release/chorus
 
 <div align="center">
 
-**[⬆ 回到顶部](#chorus-)**
+**[⬆ 回到顶部](#chorus)**
 
 用 ❤️ 和 Rust 构建
 
