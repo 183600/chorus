@@ -4,9 +4,12 @@ use anyhow::{anyhow, Result};
 use async_recursion::async_recursion;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tokio::sync::mpsc::UnboundedSender;
 use url::Url;
 
 const DEFAULT_TEMPERATURE: f32 = 1.4;
+
+pub type StreamCallback = UnboundedSender<String>;
 
 struct SelectedChoice {
     index: usize,
@@ -97,12 +100,30 @@ impl WorkflowEngine {
     }
 
     pub async fn process(&self, prompt: String) -> Result<String> {
-        self.run_plan(&self.config.workflow_integration, &prompt, 0)
+        self.run_plan(&self.config.workflow_integration, &prompt, 0, None)
             .await
     }
 
     pub async fn process_with_details(&self, prompt: String) -> Result<WorkflowResult> {
-        self.run_plan_with_details(&self.config.workflow_integration, &prompt, 0)
+        self.run_plan_with_details(&self.config.workflow_integration, &prompt, 0, None)
+            .await
+    }
+
+    pub async fn process_with_stream(
+        &self,
+        prompt: String,
+        stream: Option<StreamCallback>,
+    ) -> Result<String> {
+        self.run_plan(&self.config.workflow_integration, &prompt, 0, stream)
+            .await
+    }
+
+    pub async fn process_with_details_stream(
+        &self,
+        prompt: String,
+        stream: Option<StreamCallback>,
+    ) -> Result<WorkflowResult> {
+        self.run_plan_with_details(&self.config.workflow_integration, &prompt, 0, stream)
             .await
     }
 
@@ -112,6 +133,7 @@ impl WorkflowEngine {
         plan: &WorkflowPlan,
         prompt: &str,
         depth: usize,
+        stream: Option<StreamCallback>,
     ) -> Result<WorkflowResult> {
         if depth == 0 {
             tracing::info!("Starting workflow processing with details");
@@ -179,58 +201,71 @@ impl WorkflowEngine {
             })
             .collect();
 
-        let (selector_details, selected_choice) = if let Some(selector_target) = plan.selector.as_ref() {
-            let (details, choice) = self
-                .execute_selector(selector_target, prompt, &worker_responses, depth)
-                .await;
-            (Some(details), choice)
-        } else {
-            (None, None)
-        };
-
-        let (synthesizer_details, final_response) = if let Some(synthesizer_target) = plan.synthesizer.as_ref() {
-            let synthesizer_model_config = self.lookup_model(&synthesizer_target.model)?;
-            let synthesizer_temperature = self.resolve_synthesizer_temperature(
-                synthesizer_target,
-                synthesizer_model_config,
-                depth,
-            );
-
-            let synthesizer_details = SynthesizerDetails {
-                model: synthesizer_target.model.clone(),
-                temperature: synthesizer_temperature,
+        let (selector_details, selected_choice) =
+            if let Some(selector_target) = plan.selector.as_ref() {
+                let (details, choice) = self
+                    .execute_selector(selector_target, prompt, &worker_responses, depth)
+                    .await;
+                (Some(details), choice)
+            } else {
+                (None, None)
             };
 
-            let final_response = self
-                .call_synthesizer(
+        let mut top_level_streamed = false;
+
+        let (synthesizer_details, final_response) =
+            if let Some(synthesizer_target) = plan.synthesizer.as_ref() {
+                let synthesizer_model_config = self.lookup_model(&synthesizer_target.model)?;
+                let synthesizer_temperature = self.resolve_synthesizer_temperature(
                     synthesizer_target,
-                    prompt,
-                    &worker_responses,
+                    synthesizer_model_config,
+                    depth,
+                );
+
+                let synthesizer_details = SynthesizerDetails {
+                    model: synthesizer_target.model.clone(),
+                    temperature: synthesizer_temperature,
+                };
+
+                let stream_for_synth = if depth == 0 { stream.clone() } else { None };
+
+                let (final_response, streamed) = self
+                    .call_synthesizer(
+                        synthesizer_target,
+                        prompt,
+                        &worker_responses,
+                        selected_choice.as_ref(),
+                        depth,
+                        stream_for_synth,
+                    )
+                    .await?;
+
+                if depth == 0 {
+                    top_level_streamed = streamed;
+                }
+
+                (Some(synthesizer_details), final_response)
+            } else {
+                let final_response = self.resolve_final_response_without_synthesizer(
+                    plan,
+                    &worker_details,
+                    selector_details.as_ref(),
                     selected_choice.as_ref(),
                     depth,
-                )
-                .await?;
+                )?;
 
-            (Some(synthesizer_details), final_response)
-        } else {
-            let final_response = self.resolve_final_response_without_synthesizer(
-                plan,
-                &worker_details,
-                selector_details.as_ref(),
-                selected_choice.as_ref(),
-                depth,
-            )?;
-
-            (None, final_response)
-        };
+                (None, final_response)
+            };
 
         if depth == 0 {
+            if let Some(sender) = stream.as_ref() {
+                if !top_level_streamed {
+                    let _ = sender.send(final_response.clone());
+                }
+            }
             tracing::info!("Step 3 completed - Final response generated");
         } else {
-            tracing::debug!(
-                "Nested workflow depth {} produced final response",
-                depth
-            );
+            tracing::debug!("Nested workflow depth {} produced final response", depth);
         }
 
         Ok(WorkflowResult {
@@ -244,8 +279,16 @@ impl WorkflowEngine {
         })
     }
 
-    async fn run_plan(&self, plan: &WorkflowPlan, prompt: &str, depth: usize) -> Result<String> {
-        let result = self.run_plan_with_details(plan, prompt, depth).await?;
+    async fn run_plan(
+        &self,
+        plan: &WorkflowPlan,
+        prompt: &str,
+        depth: usize,
+        stream: Option<StreamCallback>,
+    ) -> Result<String> {
+        let result = self
+            .run_plan_with_details(plan, prompt, depth, stream)
+            .await?;
         Ok(result.final_response)
     }
 
@@ -308,15 +351,13 @@ impl WorkflowEngine {
             );
         }
 
-        let fallback = worker_details
-            .iter()
-            .find_map(|worker| {
-                if worker.success {
-                    worker.response.clone()
-                } else {
-                    None
-                }
-            });
+        let fallback = worker_details.iter().find_map(|worker| {
+            if worker.success {
+                worker.response.clone()
+            } else {
+                None
+            }
+        });
 
         if let Some(response) = fallback {
             if depth == 0 {
@@ -581,7 +622,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
                     }
 
                     match self
-                        .run_plan_with_details(sub_plan, prompt, depth + 1)
+                        .run_plan_with_details(sub_plan, prompt, depth + 1, None)
                         .await
                     {
                         Ok(result) => {
@@ -921,7 +962,8 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
         worker_responses: &[(String, String)],
         selected_choice: Option<&SelectedChoice>,
         depth: usize,
-    ) -> Result<String> {
+        stream: Option<StreamCallback>,
+    ) -> Result<(String, bool)> {
         let model_config = self.lookup_model(&target.model)?;
 
         let domain = extract_domain_from_url(&model_config.api_base);
@@ -982,11 +1024,11 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
             depth
         );
 
-        let final_response = client
-            .chat_completion(&target.model, messages, Some(temperature))
+        let completion = client
+            .chat_completion_with_stream(&target.model, messages, Some(temperature), stream)
             .await?;
 
-        Ok(final_response)
+        Ok((completion.content, completion.streamed))
     }
 
     fn resolve_worker_temperature(
@@ -1121,23 +1163,12 @@ fn parse_selector_choice(response: &str, worker_count: usize) -> Result<ParsedSe
                         .and_then(value_to_string);
                         let reasoning = find_value_in_json(
                             &value,
-                            &[
-                                "reasoning",
-                                "explanation",
-                                "why",
-                                "comment",
-                                "analysis",
-                            ],
+                            &["reasoning", "explanation", "why", "comment", "analysis"],
                         )
                         .and_then(value_to_string);
                         let selected_response = find_value_in_json(
                             &value,
-                            &[
-                                "selected_response",
-                                "response",
-                                "content",
-                                "answer",
-                            ],
+                            &["selected_response", "response", "content", "answer"],
                         )
                         .and_then(value_to_string);
 
@@ -1220,7 +1251,10 @@ fn extract_first_json_object(input: &str) -> Option<&str> {
     None
 }
 
-fn find_value_in_json<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Option<&'a serde_json::Value> {
+fn find_value_in_json<'a>(
+    value: &'a serde_json::Value,
+    keys: &[&str],
+) -> Option<&'a serde_json::Value> {
     match value {
         serde_json::Value::Object(map) => {
             for key in keys {
@@ -1235,7 +1269,9 @@ fn find_value_in_json<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Option
             }
             None
         }
-        serde_json::Value::Array(items) => items.iter().find_map(|item| find_value_in_json(item, keys)),
+        serde_json::Value::Array(items) => {
+            items.iter().find_map(|item| find_value_in_json(item, keys))
+        }
         _ => None,
     }
 }

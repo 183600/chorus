@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::workflow::{WorkflowEngine, WorkflowExecutionDetails};
+use crate::workflow::{StreamCallback, WorkflowEngine, WorkflowExecutionDetails};
 use anyhow::Result;
 use axum::{
     extract::State,
@@ -11,11 +11,13 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use futures::stream;
+use futures::{stream, StreamExt};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot};
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use std::convert::Infallible;
 use tower_http::cors::CorsLayer;
@@ -134,12 +136,19 @@ async fn execute_workflow(
     state: &AppState,
     prompt: String,
     include_workflow: bool,
+    stream: Option<StreamCallback>,
 ) -> Result<(String, Option<WorkflowExecutionDetails>), AppError> {
     if include_workflow {
-        let result = state.workflow_engine.process_with_details(prompt).await?;
+        let result = state
+            .workflow_engine
+            .process_with_details_stream(prompt, stream)
+            .await?;
         Ok((result.final_response, Some(result.execution_details)))
     } else {
-        let response = state.workflow_engine.process(prompt).await?;
+        let response = state
+            .workflow_engine
+            .process_with_stream(prompt, stream)
+            .await?;
         Ok((response, None))
     }
 }
@@ -223,41 +232,94 @@ async fn generate(
     let stream_enabled = stream.unwrap_or(false);
     let include_workflow_details = include_workflow.unwrap_or(false);
 
-    let (response_text, workflow_details) =
-        execute_workflow(&state, prompt, include_workflow_details).await?;
-
     if stream_enabled {
-        let workflow_for_events = workflow_details.clone();
-        let mut events: Vec<Result<Event, Infallible>> = Vec::new();
         let created_at = chrono::Utc::now().to_rfc3339();
+        let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<String>();
+        let (result_tx, result_rx) = oneshot::channel();
 
-        for (idx, chunk) in chunk_text(&response_text, STREAM_CHUNK_SIZE)
-            .into_iter()
-            .enumerate()
-        {
-            let mut payload = serde_json::json!({
-                "model": &model_name,
-                "created_at": &created_at,
-                "response": chunk,
-                "done": false,
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            let result = execute_workflow(
+                &state_clone,
+                prompt,
+                include_workflow_details,
+                Some(chunk_tx.clone()),
+            )
+            .await;
+            drop(chunk_tx);
+            let _ = result_tx.send(result);
+        });
+
+        let chunk_stream =
+            UnboundedReceiverStream::new(chunk_rx).flat_map({
+                let model_name = model_name.clone();
+                let created_at = created_at.clone();
+                move |segment| {
+                    let model_name = model_name.clone();
+                    let created_at = created_at.clone();
+                    let pieces = if segment.is_empty() {
+                        vec![String::new()]
+                    } else {
+                        chunk_text(&segment, STREAM_CHUNK_SIZE)
+                    };
+                    stream::iter(pieces.into_iter().map(
+                        move |piece| -> Result<Event, Infallible> {
+                            let payload = serde_json::json!({
+                                "model": model_name,
+                                "created_at": created_at,
+                                "response": piece,
+                                "done": false,
+                            });
+                            Ok(Event::default().json_data(payload).unwrap())
+                        },
+                    ))
+                }
             });
-            if idx == 0 {
-                insert_workflow_field(&mut payload, &workflow_for_events);
+
+        let completion_stream = futures::stream::once({
+            let model_name = model_name.clone();
+            let created_at = created_at.clone();
+            async move {
+                match result_rx.await {
+                    Ok(Ok((_, workflow_details))) => {
+                        let mut payload = serde_json::json!({
+                            "model": model_name.clone(),
+                            "created_at": created_at.clone(),
+                            "response": "",
+                            "done": true,
+                        });
+                        insert_workflow_field(&mut payload, &workflow_details);
+                        Ok::<Event, Infallible>(Event::default().json_data(payload).unwrap())
+                    }
+                    Ok(Err(err)) => {
+                        let error_message = err.error.to_string();
+                        let payload = serde_json::json!({
+                            "model": model_name.clone(),
+                            "created_at": created_at.clone(),
+                            "done": true,
+                            "error": error_message,
+                        });
+                        Ok::<Event, Infallible>(Event::default().json_data(payload).unwrap())
+                    }
+                    Err(_) => {
+                        let payload = serde_json::json!({
+                            "model": model_name.clone(),
+                            "created_at": created_at.clone(),
+                            "done": true,
+                            "error": "stream cancelled",
+                        });
+                        Ok::<Event, Infallible>(Event::default().json_data(payload).unwrap())
+                    }
+                }
             }
-            events.push(Ok(Event::default().json_data(payload).unwrap()));
-        }
+        });
 
-        events.push(Ok(Event::default()
-            .json_data(serde_json::json!({
-                "model": &model_name,
-                "created_at": &created_at,
-                "response": "",
-                "done": true,
-            }))
-            .unwrap()));
-
-        return Ok(Sse::new(stream::iter(events)).into_response());
+        let sse_stream = chunk_stream.chain(completion_stream);
+        return Ok(Sse::new(sse_stream).into_response());
     }
+
+    let (response_text, workflow_details) =
+        execute_workflow(&state, prompt, include_workflow_details, None).await?;
 
     Ok(Json(GenerateResponse {
         model: model_name,
@@ -286,47 +348,108 @@ async fn chat(
     let stream_enabled = req.stream.unwrap_or(false);
     let include_workflow_details = req.include_workflow.unwrap_or(false);
 
-    let (response_text, workflow_details) =
-        execute_workflow(&state, prompt, include_workflow_details).await?;
-
     if stream_enabled {
-        let workflow_for_events = workflow_details.clone();
-        let mut events: Vec<Result<Event, Infallible>> = Vec::new();
         let created_at = chrono::Utc::now().to_rfc3339();
+        let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<String>();
+        let (result_tx, result_rx) = oneshot::channel();
 
-        for (idx, chunk) in chunk_text(&response_text, STREAM_CHUNK_SIZE)
-            .into_iter()
-            .enumerate()
-        {
-            let mut payload = serde_json::json!({
-                "model": &model_name,
-                "created_at": &created_at,
-                "message": {
-                    "role": "assistant",
-                    "content": chunk,
-                },
-                "done": false,
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            let result = execute_workflow(
+                &state_clone,
+                prompt,
+                include_workflow_details,
+                Some(chunk_tx.clone()),
+            )
+            .await;
+            drop(chunk_tx);
+            let _ = result_tx.send(result);
+        });
+
+        let chunk_stream =
+            UnboundedReceiverStream::new(chunk_rx).flat_map({
+                let model_name = model_name.clone();
+                let created_at = created_at.clone();
+                move |segment| {
+                    let model_name = model_name.clone();
+                    let created_at = created_at.clone();
+                    let pieces = if segment.is_empty() {
+                        vec![String::new()]
+                    } else {
+                        chunk_text(&segment, STREAM_CHUNK_SIZE)
+                    };
+                    stream::iter(pieces.into_iter().map(
+                        move |piece| -> Result<Event, Infallible> {
+                            let payload = serde_json::json!({
+                                "model": model_name,
+                                "created_at": created_at,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": piece,
+                                },
+                                "done": false,
+                            });
+                            Ok(Event::default().json_data(payload).unwrap())
+                        },
+                    ))
+                }
             });
-            if idx == 0 {
-                insert_workflow_field(&mut payload, &workflow_for_events);
+
+        let completion_stream = futures::stream::once({
+            let model_name = model_name.clone();
+            let created_at = created_at.clone();
+            async move {
+                match result_rx.await {
+                    Ok(Ok((_, workflow_details))) => {
+                        let mut payload = serde_json::json!({
+                            "model": model_name.clone(),
+                            "created_at": created_at.clone(),
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                            },
+                            "done": true,
+                        });
+                        insert_workflow_field(&mut payload, &workflow_details);
+                        Ok::<Event, Infallible>(Event::default().json_data(payload).unwrap())
+                    }
+                    Ok(Err(err)) => {
+                        let error_message = err.error.to_string();
+                        let payload = serde_json::json!({
+                            "model": model_name.clone(),
+                            "created_at": created_at.clone(),
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                            },
+                            "done": true,
+                            "error": error_message,
+                        });
+                        Ok::<Event, Infallible>(Event::default().json_data(payload).unwrap())
+                    }
+                    Err(_) => {
+                        let payload = serde_json::json!({
+                            "model": model_name.clone(),
+                            "created_at": created_at.clone(),
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                            },
+                            "done": true,
+                            "error": "stream cancelled",
+                        });
+                        Ok::<Event, Infallible>(Event::default().json_data(payload).unwrap())
+                    }
+                }
             }
-            events.push(Ok(Event::default().json_data(payload).unwrap()));
-        }
+        });
 
-        events.push(Ok(Event::default()
-            .json_data(serde_json::json!({
-                "model": &model_name,
-                "created_at": &created_at,
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                },
-                "done": true,
-            }))
-            .unwrap()));
-
-        return Ok(Sse::new(stream::iter(events)).into_response());
+        let sse_stream = chunk_stream.chain(completion_stream);
+        return Ok(Sse::new(sse_stream).into_response());
     }
+
+    let (response_text, workflow_details) =
+        execute_workflow(&state, prompt, include_workflow_details, None).await?;
 
     Ok(Json(ChatResponse {
         model: model_name,
@@ -354,66 +477,152 @@ async fn openai_chat_completions(
 
     let prompt = build_prompt_from_messages(&req.messages);
 
-    let include_workflow_details = req.include_workflow.unwrap_or(false);
-    let (response_text, workflow_details) =
-        execute_workflow(&state, prompt, include_workflow_details).await?;
     let model_name = req.model.unwrap_or_else(|| "chorus".to_string());
+    let stream_enabled = req.stream.unwrap_or(false);
+    let include_workflow_details = req.include_workflow.unwrap_or(false);
 
+    if stream_enabled {
+        let now = chrono::Utc::now();
+        let created = now.timestamp();
+        let id = format!("chatcmpl_{}", now.timestamp_millis());
+        let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<String>();
+        let (result_tx, result_rx) = oneshot::channel();
+
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            let result = execute_workflow(
+                &state_clone,
+                prompt,
+                include_workflow_details,
+                Some(chunk_tx.clone()),
+            )
+            .await;
+            drop(chunk_tx);
+            let _ = result_tx.send(result);
+        });
+
+        let initial_stream = futures::stream::once({
+            let id = id.clone();
+            let model_name = model_name.clone();
+            async move {
+                let payload = serde_json::json!({
+                    "id": id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [ {
+                        "index": 0,
+                        "delta": { "role": "assistant" },
+                        "finish_reason": serde_json::Value::Null
+                    } ],
+                });
+                Ok::<Event, Infallible>(Event::default().json_data(payload).unwrap())
+            }
+        });
+
+        let chunk_stream =
+            UnboundedReceiverStream::new(chunk_rx).flat_map({
+                let id = id.clone();
+                let model_name = model_name.clone();
+                move |segment| {
+                    let id = id.clone();
+                    let model_name = model_name.clone();
+                    let pieces = if segment.is_empty() {
+                        vec![String::new()]
+                    } else {
+                        chunk_text(&segment, STREAM_CHUNK_SIZE)
+                    };
+                    stream::iter(pieces.into_iter().map(
+                        move |piece| -> Result<Event, Infallible> {
+                            let payload = serde_json::json!({
+                                "id": id.clone(),
+                                "object": "chat.completion.chunk",
+                                "created": created,
+                                "model": model_name.clone(),
+                                "choices": [ {
+                                    "index": 0,
+                                    "delta": { "content": piece },
+                                    "finish_reason": serde_json::Value::Null
+                                } ]
+                            });
+                            Ok(Event::default().json_data(payload).unwrap())
+                        },
+                    ))
+                }
+            });
+
+        let completion_stream = futures::stream::once({
+            let id = id.clone();
+            let model_name = model_name.clone();
+            async move {
+                match result_rx.await {
+                    Ok(Ok((_, workflow_details))) => {
+                        let mut payload = serde_json::json!({
+                            "id": id.clone(),
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": model_name.clone(),
+                            "choices": [ {
+                                "index": 0,
+                                "delta": serde_json::json!({}),
+                                "finish_reason": "stop"
+                            } ]
+                        });
+                        insert_workflow_field(&mut payload, &workflow_details);
+                        Ok::<Event, Infallible>(Event::default().json_data(payload).unwrap())
+                    }
+                    Ok(Err(err)) => {
+                        let error_message = err.error.to_string();
+                        let payload = serde_json::json!({
+                            "id": id.clone(),
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": model_name.clone(),
+                            "choices": [ {
+                                "index": 0,
+                                "delta": serde_json::json!({}),
+                                "finish_reason": "error"
+                            } ],
+                            "error": error_message,
+                        });
+                        Ok::<Event, Infallible>(Event::default().json_data(payload).unwrap())
+                    }
+                    Err(_) => {
+                        let payload = serde_json::json!({
+                            "id": id.clone(),
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": model_name.clone(),
+                            "choices": [ {
+                                "index": 0,
+                                "delta": serde_json::json!({}),
+                                "finish_reason": "error"
+                            } ],
+                            "error": "stream cancelled",
+                        });
+                        Ok::<Event, Infallible>(Event::default().json_data(payload).unwrap())
+                    }
+                }
+            }
+        });
+
+        let done_stream = futures::stream::once(async {
+            Ok::<Event, Infallible>(Event::default().data("[DONE]"))
+        });
+
+        let sse_stream = initial_stream
+            .chain(chunk_stream)
+            .chain(completion_stream)
+            .chain(done_stream);
+
+        return Ok(Sse::new(sse_stream).into_response());
+    }
+
+    let (response_text, workflow_details) =
+        execute_workflow(&state, prompt, include_workflow_details, None).await?;
     let now = chrono::Utc::now();
     let created = now.timestamp();
     let id = format!("chatcmpl_{}", now.timestamp_millis());
-
-    if req.stream.unwrap_or(false) {
-        let workflow_for_events = workflow_details.clone();
-        let mut events: Vec<Result<Event, Infallible>> = Vec::new();
-
-        let mut role_payload = serde_json::json!({
-            "id": &id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": &model_name,
-            "choices": [ {
-                "index": 0,
-                "delta": { "role": "assistant" },
-                "finish_reason": serde_json::Value::Null
-            } ],
-        });
-        insert_workflow_field(&mut role_payload, &workflow_for_events);
-        events.push(Ok(Event::default().json_data(role_payload).unwrap()));
-
-        for chunk in chunk_text(&response_text, STREAM_CHUNK_SIZE) {
-            events.push(Ok(Event::default()
-                .json_data(serde_json::json!({
-                    "id": &id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": &model_name,
-                    "choices": [ {
-                        "index": 0,
-                        "delta": { "content": chunk },
-                        "finish_reason": serde_json::Value::Null
-                    } ]
-                }))
-                .unwrap()));
-        }
-
-        events.push(Ok(Event::default()
-            .json_data(serde_json::json!({
-                "id": &id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": &model_name,
-                "choices": [ {
-                    "index": 0,
-                    "delta": serde_json::json!({}),
-                    "finish_reason": "stop"
-                } ]
-            }))
-            .unwrap()));
-        events.push(Ok(Event::default().data("[DONE]")));
-
-        return Ok(Sse::new(stream::iter(events)).into_response());
-    }
 
     let body = serde_json::json!({
         "id": id,
@@ -447,57 +656,130 @@ async fn openai_completions(
     let stream_enabled = req.stream.unwrap_or(false);
     let include_workflow_details = req.include_workflow.unwrap_or(false);
 
+    if stream_enabled {
+        let now = chrono::Utc::now();
+        let created = now.timestamp();
+        let id = format!("cmpl_{}", now.timestamp_millis());
+        let (chunk_tx, chunk_rx) = mpsc::unbounded_channel::<String>();
+        let (result_tx, result_rx) = oneshot::channel();
+
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            let result = execute_workflow(
+                &state_clone,
+                prompt,
+                include_workflow_details,
+                Some(chunk_tx.clone()),
+            )
+            .await;
+            drop(chunk_tx);
+            let _ = result_tx.send(result);
+        });
+
+        let chunk_stream =
+            UnboundedReceiverStream::new(chunk_rx).flat_map({
+                let id = id.clone();
+                let model_name = model_name.clone();
+                move |segment| {
+                    let id = id.clone();
+                    let model_name = model_name.clone();
+                    let pieces = if segment.is_empty() {
+                        vec![String::new()]
+                    } else {
+                        chunk_text(&segment, STREAM_CHUNK_SIZE)
+                    };
+                    stream::iter(pieces.into_iter().map(
+                        move |piece| -> Result<Event, Infallible> {
+                            let payload = serde_json::json!({
+                                "id": id.clone(),
+                                "object": "text_completion",
+                                "created": created,
+                                "model": model_name.clone(),
+                                "choices": [ {
+                                    "text": piece,
+                                    "index": 0,
+                                    "logprobs": serde_json::Value::Null,
+                                    "finish_reason": serde_json::Value::Null
+                                } ]
+                            });
+                            Ok(Event::default().json_data(payload).unwrap())
+                        },
+                    ))
+                }
+            });
+
+        let completion_stream = futures::stream::once({
+            let id = id.clone();
+            let model_name = model_name.clone();
+            async move {
+                match result_rx.await {
+                    Ok(Ok((_, workflow_details))) => {
+                        let mut payload = serde_json::json!({
+                            "id": id.clone(),
+                            "object": "text_completion",
+                            "created": created,
+                            "model": model_name.clone(),
+                            "choices": [ {
+                                "text": "",
+                                "index": 0,
+                                "logprobs": serde_json::Value::Null,
+                                "finish_reason": "stop"
+                            } ]
+                        });
+                        insert_workflow_field(&mut payload, &workflow_details);
+                        Ok::<Event, Infallible>(Event::default().json_data(payload).unwrap())
+                    }
+                    Ok(Err(err)) => {
+                        let error_message = err.error.to_string();
+                        let payload = serde_json::json!({
+                            "id": id.clone(),
+                            "object": "text_completion",
+                            "created": created,
+                            "model": model_name.clone(),
+                            "choices": [ {
+                                "text": "",
+                                "index": 0,
+                                "logprobs": serde_json::Value::Null,
+                                "finish_reason": "error"
+                            } ],
+                            "error": error_message,
+                        });
+                        Ok::<Event, Infallible>(Event::default().json_data(payload).unwrap())
+                    }
+                    Err(_) => {
+                        let payload = serde_json::json!({
+                            "id": id.clone(),
+                            "object": "text_completion",
+                            "created": created,
+                            "model": model_name.clone(),
+                            "choices": [ {
+                                "text": "",
+                                "index": 0,
+                                "logprobs": serde_json::Value::Null,
+                                "finish_reason": "error"
+                            } ],
+                            "error": "stream cancelled",
+                        });
+                        Ok::<Event, Infallible>(Event::default().json_data(payload).unwrap())
+                    }
+                }
+            }
+        });
+
+        let done_stream = futures::stream::once(async {
+            Ok::<Event, Infallible>(Event::default().data("[DONE]"))
+        });
+
+        let sse_stream = chunk_stream.chain(completion_stream).chain(done_stream);
+        return Ok(Sse::new(sse_stream).into_response());
+    }
+
     let (response_text, workflow_details) =
-        execute_workflow(&state, prompt, include_workflow_details).await?;
+        execute_workflow(&state, prompt, include_workflow_details, None).await?;
 
     let now = chrono::Utc::now();
     let created = now.timestamp();
     let id = format!("cmpl_{}", now.timestamp_millis());
-
-    if stream_enabled {
-        let workflow_for_events = workflow_details.clone();
-        let mut events: Vec<Result<Event, Infallible>> = Vec::new();
-
-        for (idx, chunk) in chunk_text(&response_text, STREAM_CHUNK_SIZE)
-            .into_iter()
-            .enumerate()
-        {
-            let mut payload = serde_json::json!({
-                "id": &id,
-                "object": "text_completion",
-                "created": created,
-                "model": &model_name,
-                "choices": [ {
-                    "text": chunk,
-                    "index": 0,
-                    "logprobs": serde_json::Value::Null,
-                    "finish_reason": serde_json::Value::Null
-                } ],
-            });
-            if idx == 0 {
-                insert_workflow_field(&mut payload, &workflow_for_events);
-            }
-            events.push(Ok(Event::default().json_data(payload).unwrap()));
-        }
-
-        events.push(Ok(Event::default()
-            .json_data(serde_json::json!({
-                "id": &id,
-                "object": "text_completion",
-                "created": created,
-                "model": &model_name,
-                "choices": [ {
-                    "text": "",
-                    "index": 0,
-                    "logprobs": serde_json::Value::Null,
-                    "finish_reason": "stop"
-                } ]
-            }))
-            .unwrap()));
-        events.push(Ok(Event::default().data("[DONE]")));
-
-        return Ok(Sse::new(stream::iter(events)).into_response());
-    }
 
     let body = serde_json::json!({
         "id": id,
@@ -717,7 +999,7 @@ async fn responses(
     }
 
     let (response_text, workflow_details) =
-        execute_workflow(&state, prompt, include_workflow_details).await?;
+        execute_workflow(&state, prompt, include_workflow_details, None).await?;
 
     tracing::debug!(
         "Generated responses payload (prompt {} bytes, response {} bytes)",
@@ -882,8 +1164,7 @@ mod responses_tests {
         use axum::http::StatusCode;
         use axum::response::IntoResponse;
 
-        let response = super::AppError::bad_request(anyhow::anyhow!("bad request"))
-            .into_response();
+        let response = super::AppError::bad_request(anyhow::anyhow!("bad request")).into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

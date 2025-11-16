@@ -1,8 +1,10 @@
 use anyhow::{anyhow, Context, Result};
+use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -37,6 +39,12 @@ pub struct Usage {
     pub total_tokens: Option<i32>,
 }
 
+#[derive(Debug)]
+pub struct CompletionResult {
+    pub content: String,
+    pub streamed: bool,
+}
+
 pub struct LLMClient {
     client: Client,
     api_base: String,
@@ -63,13 +71,26 @@ impl LLMClient {
         messages: Vec<ChatMessage>,
         temperature: Option<f32>,
     ) -> Result<String> {
+        let result = self
+            .chat_completion_with_stream(model, messages, temperature, None)
+            .await?;
+        Ok(result.content)
+    }
+
+    pub async fn chat_completion_with_stream(
+        &self,
+        model: &str,
+        messages: Vec<ChatMessage>,
+        temperature: Option<f32>,
+        stream: Option<UnboundedSender<String>>,
+    ) -> Result<CompletionResult> {
         let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
 
         let request_body = json!({
             "model": model,
             "messages": messages,
             "temperature": temperature,
-            "stream": false,
+            "stream": stream.is_some(),
         });
 
         tracing::debug!("Calling LLM API: {} with model: {}", url, model);
@@ -97,93 +118,21 @@ impl LLMClient {
             ));
         }
 
+        if stream.is_some() && response_is_event_stream(&response) {
+            return self.consume_event_stream(response, stream).await;
+        }
+
         // Be tolerant to different provider response shapes
         let v: serde_json::Value = response.json().await?;
 
-        // Try OpenAI-compatible: choices[0].message.content as string
-        if let Some(s) = v
-            .get("choices")
-            .and_then(|c| c.get(0))
-            .and_then(|c0| c0.get("message"))
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_str())
-        {
-            return Ok(s.to_string());
-        }
-
-        // Some providers return content as array of parts
-        if let Some(parts) = v
-            .get("choices")
-            .and_then(|c| c.get(0))
-            .and_then(|c0| c0.get("message"))
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_array())
-        {
-            let mut out = String::new();
-            for p in parts {
-                if let Some(s) = p.as_str() {
-                    out.push_str(s);
-                } else if let Some(t) = p.get("text").and_then(|t| t.as_str()) {
-                    out.push_str(t);
-                }
+        if let Some(content) = extract_completion_text(&v) {
+            if let Some(sender) = stream.as_ref() {
+                let _ = sender.send(content.clone());
             }
-            if !out.is_empty() {
-                return Ok(out);
-            }
-        }
-
-        // Some providers (e.g., GLM-4.x) use reasoning_content instead of content
-        if let Some(s) = v
-            .get("choices")
-            .and_then(|c| c.get(0))
-            .and_then(|c0| c0.get("message"))
-            .and_then(|m| m.get("reasoning_content"))
-            .and_then(|c| c.as_str())
-        {
-            return Ok(s.to_string());
-        }
-        if let Some(parts) = v
-            .get("choices")
-            .and_then(|c| c.get(0))
-            .and_then(|c0| c0.get("message"))
-            .and_then(|m| m.get("reasoning_content"))
-            .and_then(|c| c.as_array())
-        {
-            let mut out = String::new();
-            for p in parts {
-                if let Some(s) = p.as_str() {
-                    out.push_str(s);
-                } else if let Some(t) = p.get("text").and_then(|t| t.as_str()) {
-                    out.push_str(t);
-                }
-            }
-            if !out.is_empty() {
-                return Ok(out);
-            }
-        }
-
-        // Some providers use choices[0].text
-        if let Some(s) = v
-            .get("choices")
-            .and_then(|c| c.get(0))
-            .and_then(|c0| c0.get("text"))
-            .and_then(|t| t.as_str())
-        {
-            return Ok(s.to_string());
-        }
-
-        // Fallback fields like output_text
-        if let Some(s) = v.get("output_text").and_then(|t| t.as_str()) {
-            return Ok(s.to_string());
-        }
-
-        // Last resort: stringify first choice.message object
-        if let Some(obj) = v
-            .get("choices")
-            .and_then(|c| c.get(0))
-            .and_then(|c0| c0.get("message"))
-        {
-            return Ok(obj.to_string());
+            return Ok(CompletionResult {
+                content,
+                streamed: false,
+            });
         }
 
         if let Some(err_msg) = detect_provider_error(&v) {
@@ -196,6 +145,286 @@ impl LLMClient {
         }
 
         Err(anyhow!("LLM response missing content field: {}", v))
+    }
+
+    async fn consume_event_stream(
+        &self,
+        response: reqwest::Response,
+        stream: Option<UnboundedSender<String>>,
+    ) -> Result<CompletionResult> {
+        let mut final_text = String::new();
+        let mut streamed = false;
+        let mut buffer = String::new();
+        let mut byte_stream = response.bytes_stream();
+
+        while let Some(item) = byte_stream.next().await {
+            let chunk = item?;
+            let chunk_str = String::from_utf8_lossy(&chunk);
+            buffer.push_str(&chunk_str);
+
+            loop {
+                let Some((idx, sep_len)) = find_event_separator(&buffer) else {
+                    break;
+                };
+
+                let mut event = buffer[..idx].to_string();
+                buffer.drain(..idx + sep_len);
+
+                if event.trim().is_empty() {
+                    continue;
+                }
+
+                if event.ends_with('\r') {
+                    event.pop();
+                }
+
+                let mut data_payload = String::new();
+                for line in event.lines() {
+                    if let Some(rest) = line.strip_prefix("data:") {
+                        if !data_payload.is_empty() {
+                            data_payload.push('\n');
+                        }
+                        data_payload.push_str(rest.trim_start());
+                    }
+                }
+
+                if data_payload.is_empty() {
+                    continue;
+                }
+
+                let trimmed = data_payload.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                if trimmed == "[DONE]" {
+                    return Ok(CompletionResult {
+                        content: final_text,
+                        streamed,
+                    });
+                }
+
+                match serde_json::from_str::<serde_json::Value>(trimmed) {
+                    Ok(value) => {
+                        if let Some(text) = extract_stream_content(&value)
+                            .or_else(|| extract_completion_text(&value))
+                        {
+                            if let Some(sender) = stream.as_ref() {
+                                let _ = sender.send(text.clone());
+                            }
+                            if !text.is_empty() {
+                                final_text.push_str(&text);
+                                streamed = true;
+                            }
+                        }
+
+                        if let Some(reason) = value
+                            .get("choices")
+                            .and_then(|c| c.get(0))
+                            .and_then(|c0| c0.get("finish_reason"))
+                            .and_then(|r| r.as_str())
+                        {
+                            if !reason.is_empty() && reason != "null" {
+                                return Ok(CompletionResult {
+                                    content: final_text,
+                                    streamed,
+                                });
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        if let Some(sender) = stream.as_ref() {
+                            let _ = sender.send(trimmed.to_string());
+                        }
+                        if !trimmed.is_empty() {
+                            final_text.push_str(trimmed);
+                            streamed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(CompletionResult {
+            content: final_text,
+            streamed,
+        })
+    }
+}
+
+fn response_is_event_stream(response: &reqwest::Response) -> bool {
+    response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .map(|content_type| content_type.contains("text/event-stream"))
+        .unwrap_or(false)
+}
+
+fn find_event_separator(buffer: &str) -> Option<(usize, usize)> {
+    if let Some(idx) = buffer.find("\r\n\r\n") {
+        Some((idx, 4))
+    } else {
+        buffer.find("\n\n").map(|idx| (idx, 2))
+    }
+}
+
+fn extract_completion_text(value: &serde_json::Value) -> Option<String> {
+    let choice = value.get("choices").and_then(|c| c.get(0));
+
+    if let Some(choice) = choice {
+        if let Some(message) = choice.get("message") {
+            if let Some(content) = message.get("content") {
+                if let Some(text) = normalize_content_value(content) {
+                    if !text.is_empty() {
+                        return Some(text);
+                    }
+                }
+            }
+            if let Some(reasoning) = message.get("reasoning_content") {
+                if let Some(text) = normalize_content_value(reasoning) {
+                    if !text.is_empty() {
+                        return Some(text);
+                    }
+                }
+            }
+            if let Some(reasoning) = message.get("reasoning") {
+                if let Some(text) = normalize_content_value(reasoning) {
+                    if !text.is_empty() {
+                        return Some(text);
+                    }
+                }
+            }
+        }
+
+        if let Some(text) = choice.get("text").and_then(|t| t.as_str()) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    if let Some(text) = value
+        .get("output_text")
+        .and_then(|t| normalize_content_value(t))
+    {
+        if !text.is_empty() {
+            return Some(text);
+        }
+    }
+
+    if let Some(obj) = value
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c0| c0.get("message"))
+    {
+        return Some(obj.to_string());
+    }
+
+    None
+}
+
+fn extract_stream_content(value: &serde_json::Value) -> Option<String> {
+    let choice = value.get("choices")?.get(0)?;
+
+    if let Some(delta) = choice.get("delta") {
+        if let Some(content) = delta.get("content") {
+            if let Some(text) = normalize_content_value(content) {
+                if !text.is_empty() {
+                    return Some(text);
+                }
+            }
+        }
+        if let Some(reasoning) = delta.get("reasoning_content") {
+            if let Some(text) = normalize_content_value(reasoning) {
+                if !text.is_empty() {
+                    return Some(text);
+                }
+            }
+        }
+        if let Some(analysis) = delta.get("analysis") {
+            if let Some(text) = normalize_content_value(analysis) {
+                if !text.is_empty() {
+                    return Some(text);
+                }
+            }
+        }
+        if let Some(reasoning) = delta.get("reasoning") {
+            if let Some(text) = normalize_content_value(reasoning) {
+                if !text.is_empty() {
+                    return Some(text);
+                }
+            }
+        }
+    }
+
+    if let Some(text) = choice.get("text").and_then(|t| t.as_str()) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    } else {
+        None
+    }
+}
+
+fn normalize_content_value(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
+        }
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        serde_json::Value::Array(items) => {
+            let mut out = String::new();
+            for item in items {
+                if let Some(piece) = normalize_content_value(item) {
+                    out.push_str(&piece);
+                }
+            }
+            if out.is_empty() {
+                None
+            } else {
+                Some(out)
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for key in ["text", "content", "value", "message"] {
+                if let Some(inner) = map.get(key) {
+                    if let Some(text) = normalize_content_value(inner) {
+                        if !text.is_empty() {
+                            return Some(text);
+                        }
+                    }
+                }
+            }
+
+            if let Some(parts) = map.get("parts") {
+                if let Some(text) = normalize_content_value(parts) {
+                    if !text.is_empty() {
+                        return Some(text);
+                    }
+                }
+            }
+
+            if let Some(messages) = map.get("messages") {
+                if let Some(text) = normalize_content_value(messages) {
+                    if !text.is_empty() {
+                        return Some(text);
+                    }
+                }
+            }
+
+            None
+        }
     }
 }
 
