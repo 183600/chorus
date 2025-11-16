@@ -204,33 +204,17 @@ impl WorkflowPlan {
     }
 
     pub fn from_json_str(json: &str) -> Result<Self> {
-        let mut value: JsonValue = serde_json::from_str(json).map_err(|err| {
-            anyhow!(
-                "Failed to parse workflow integration JSON: {}",
-                err
-            )
-        })?;
+        let mut value: JsonValue = serde_json::from_str(json)
+            .map_err(|err| anyhow!("Failed to parse workflow integration JSON: {}", err))?;
 
-        Self::ensure_workflow_targets(&mut value).map_err(|err| {
-            anyhow!(
-                "Failed to parse workflow integration JSON: {}",
-                err
-            )
-        })?;
+        Self::ensure_workflow_targets(&mut value)
+            .map_err(|err| anyhow!("Failed to parse workflow integration JSON: {}", err))?;
 
-        let mut plan: Self = serde_json::from_value(value).map_err(|err| {
-            anyhow!(
-                "Failed to parse workflow integration JSON: {}",
-                err
-            )
-        })?;
+        let mut plan: Self = serde_json::from_value(value)
+            .map_err(|err| anyhow!("Failed to parse workflow integration JSON: {}", err))?;
 
-        plan.validate_structure().map_err(|err| {
-            anyhow!(
-                "Failed to parse workflow integration JSON: {}",
-                err
-            )
-        })?;
+        plan.validate_structure()
+            .map_err(|err| anyhow!("Failed to parse workflow integration JSON: {}", err))?;
         plan.inherit_missing_synthesizers();
 
         Ok(plan)
@@ -490,21 +474,19 @@ impl<'de> Deserialize<'de> for WorkflowWorker {
                     }
 
                     let plan: WorkflowPlan = serde_json::from_value(value).map_err(|err| {
-                        D::Error::custom(format!(
-                            "Failed to parse nested workflow worker: {}",
-                            err
-                        ))
+                        D::Error::custom(format!("Failed to parse nested workflow worker: {}", err))
                     })?;
                     return Ok(WorkflowWorker::Workflow(Box::new(plan)));
                 }
 
                 if has_name {
-                    let target: WorkflowModelTarget = serde_json::from_value(value).map_err(|err| {
-                        D::Error::custom(format!(
-                            "Failed to parse workflow worker model: {}",
-                            err
-                        ))
-                    })?;
+                    let target: WorkflowModelTarget =
+                        serde_json::from_value(value).map_err(|err| {
+                            D::Error::custom(format!(
+                                "Failed to parse workflow worker model: {}",
+                                err
+                            ))
+                        })?;
                     return Ok(WorkflowWorker::Model(target));
                 }
 
@@ -587,9 +569,9 @@ where
         PlanInput::PlainString(json) => WorkflowPlan::from_json_str(&json)
             .map_err(|err| DeError::custom(format!("Failed to parse workflow json: {}", err))),
         PlanInput::Plan(mut plan) => {
-            plan
-                .validate_structure()
-                .map_err(|err| DeError::custom(format!("Failed to parse workflow json: {}", err)))?;
+            plan.validate_structure().map_err(|err| {
+                DeError::custom(format!("Failed to parse workflow json: {}", err))
+            })?;
             plan.inherit_missing_synthesizers();
             Ok(plan)
         }

@@ -36,7 +36,10 @@ async fn main() -> Result<()> {
     if let Some(synth) = &config.workflow_integration.synthesizer {
         tracing::info!("Synthesizer model: {}", synth.model);
     } else if let Some(selector) = &config.workflow_integration.selector {
-        tracing::info!("No synthesizer configured; using selector: {}", selector.model);
+        tracing::info!(
+            "No synthesizer configured; using selector: {}",
+            selector.model
+        );
     } else {
         tracing::warn!("No synthesizer or selector configured for the workflow");
     }

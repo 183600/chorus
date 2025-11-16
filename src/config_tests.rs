@@ -246,10 +246,7 @@ synthesizer_timeout_secs = 30
         assert_eq!(nested.analyzer.model, "glm-4.6");
         assert_eq!(nested.workers.len(), 4);
         assert_eq!(
-            nested
-                .synthesizer
-                .as_ref()
-                .map(|t| t.model.as_str()),
+            nested.synthesizer.as_ref().map(|t| t.model.as_str()),
             Some("qwen3-max")
         );
         assert!(
@@ -265,10 +262,7 @@ synthesizer_timeout_secs = 30
         assert_eq!(deeper.analyzer.model, "glm-4.6");
         assert_eq!(deeper.workers.len(), 3);
         assert_eq!(
-            deeper
-                .synthesizer
-                .as_ref()
-                .map(|t| t.model.as_str()),
+            deeper.synthesizer.as_ref().map(|t| t.model.as_str()),
             Some("qwen3-max")
         );
         assert!(
@@ -289,9 +283,7 @@ synthesizer_timeout_secs = 30
             "nested workflow should not serialize selector when absent"
         );
         assert!(
-            value["workers"][1]["workers"][3]
-                .get("selector")
-                .is_none(),
+            value["workers"][1]["workers"][3].get("selector").is_none(),
             "deep workflow should not serialize selector when absent"
         );
         assert_eq!(
@@ -457,10 +449,7 @@ synthesizer_timeout_secs = 1
             "nested workflow with selector should not inherit synthesizer"
         );
         assert_eq!(
-            nested
-                .selector
-                .as_ref()
-                .map(|t| t.model.as_str()),
+            nested.selector.as_ref().map(|t| t.model.as_str()),
             Some("m1")
         );
 
@@ -667,10 +656,7 @@ synthesizer_timeout_secs = 5
             "nested inline workflow with selector should not inherit synthesizer"
         );
         assert_eq!(
-            nested
-                .selector
-                .as_ref()
-                .map(|t| t.model.as_str()),
+            nested.selector.as_ref().map(|t| t.model.as_str()),
             Some("m1")
         );
 
