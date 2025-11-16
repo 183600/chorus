@@ -659,10 +659,11 @@ fn extract_prompt_from_responses_body(payload: &Value) -> Option<String> {
     }
 
     for key in ["prompt", "input_text"] {
-        if let Some(Value::String(s)) = payload.get(key) {
-            let trimmed = s.trim();
-            if !trimmed.is_empty() {
-                segments.push(trimmed.to_string());
+        if let Some(value) = payload.get(key) {
+            if let Some(text) = extract_text_value(value) {
+                if !text.is_empty() {
+                    segments.push(text);
+                }
             }
         }
     }
@@ -853,6 +854,21 @@ mod responses_tests {
         assert_eq!(
             extract_prompt_from_responses_body(&payload).unwrap(),
             "First\nSecond"
+        );
+    }
+
+    #[test]
+    fn extract_prompt_handles_prompt_array() {
+        let payload = json!({
+            "prompt": [
+                "First",
+                { "text": "Second" },
+                { "content": [{ "text": "Third" }] }
+            ]
+        });
+        assert_eq!(
+            extract_prompt_from_responses_body(&payload).unwrap(),
+            "First\nSecond\nThird"
         );
     }
 
