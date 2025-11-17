@@ -307,7 +307,7 @@ Chorus 同时实现了一组与 OpenAI API 保持兼容的端点：
 | --- | --- |
 | `POST /v1/chat/completions` | 等同于 `/api/chat`，支持流式增量输出。 |
 | `POST /v1/completions` | 等同于 `/api/generate`，支持字符串或字符串数组 prompt。 |
-| `POST /v1/responses` | 兼容 OpenAI Responses API（目前以非流式方式返回）。 |
+| `POST /v1/responses` | 兼容 OpenAI Responses API，支持标准 SSE 流式输出（`response.created` → `response.output_text.delta` → `response.completed` → `[DONE]`），也可非流式返回。 |
 | `GET /v1/models` | 返回符合 OpenAI 规范的模型列表。 |
 
 #### Cherry Studio 快速配置
