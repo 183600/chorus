@@ -124,6 +124,7 @@ cd chorus
    auto_temperature = true
 
    [workflow-integration]
+   nested_worker_depth = 1
    json = """{
      "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
      "workers": [{"name": "qwen3-max"}],
@@ -227,6 +228,107 @@ json = """{
 - `analyzer` / `selector` / `synthesizer` 使用 `ref` 引用上方的 `[[model]]` 名称。
 - `workers` 可混合模型节点与子工作流，实现递归流程。
 - JSON 内的 `temperature` / `auto_temperature` 优先级高于模型默认值。
+
+#### 嵌套工作流层级（nested_worker_depth）
+
+`nested_worker_depth` 用来控制系统自动构建的冗余嵌套层级，默认值为 `1`，表示每个 Worker 只执行一次，与当前行为一致。当该值大于 1 时，Chorus 会在配置解析阶段为每个 Worker 包装 `n-1` 层与父级相同的 analyzer/synthesizer（或 selector），并在每一层内复制两份同样的 Worker，使得单个 Worker 的实际执行次数增至 `2^(n-1)`，便于获取更多候选答案进行甄选和综合。
+
+```toml
+[workflow-integration]
+nested_worker_depth = 1
+json = """{
+  "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+  "workers": [
+    {"name": "kimi-k2-0905"},
+    {"name": "qwen3-coder", "temperature": 0.6}
+  ],
+  "synthesizer": {"ref": "qwen3-max"}
+}"""
+```
+
+当 `nested_worker_depth = 2` 时，上述配置会被自动扩展为：
+
+```json
+{
+  "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+  "workers": [
+    {
+      "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+      "workers": [
+        {"name": "kimi-k2-0905"},
+        {"name": "kimi-k2-0905"}
+      ],
+      "synthesizer": {"ref": "qwen3-max"}
+    },
+    {
+      "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+      "workers": [
+        {"name": "qwen3-coder", "temperature": 0.6},
+        {"name": "qwen3-coder", "temperature": 0.6}
+      ],
+      "synthesizer": {"ref": "qwen3-max"}
+    }
+  ],
+  "synthesizer": {"ref": "qwen3-max"}
+}
+```
+
+当 `nested_worker_depth = 3` 时，会在上一结构基础上再嵌套一层（每个 Worker 被复制 4 次），等价结构如下：
+
+```json
+{
+  "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+  "workers": [
+    {
+      "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+      "workers": [
+        {
+          "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+          "workers": [
+            {"name": "kimi-k2-0905"},
+            {"name": "kimi-k2-0905"}
+          ],
+          "synthesizer": {"ref": "qwen3-max"}
+        },
+        {
+          "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+          "workers": [
+            {"name": "kimi-k2-0905"},
+            {"name": "kimi-k2-0905"}
+          ],
+          "synthesizer": {"ref": "qwen3-max"}
+        }
+      ],
+      "synthesizer": {"ref": "qwen3-max"}
+    },
+    {
+      "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+      "workers": [
+        {
+          "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+          "workers": [
+            {"name": "qwen3-coder", "temperature": 0.6},
+            {"name": "qwen3-coder", "temperature": 0.6}
+          ],
+          "synthesizer": {"ref": "qwen3-max"}
+        },
+        {
+          "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+          "workers": [
+            {"name": "qwen3-coder", "temperature": 0.6},
+            {"name": "qwen3-coder", "temperature": 0.6}
+          ],
+          "synthesizer": {"ref": "qwen3-max"}
+        }
+      ],
+      "synthesizer": {"ref": "qwen3-max"}
+    }
+  ],
+  "synthesizer": {"ref": "qwen3-max"}
+}
+```
+
+依此类推，可以通过调高 `nested_worker_depth` 快速获得更多冗余的 Worker 执行次数，而无需手写庞大的嵌套 JSON。
 
 ### 超时与域名覆盖
 
