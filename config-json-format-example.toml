@@ -45,6 +45,8 @@ name = "ring-1t"
 # 工作流集成配置 - 使用 JSON 格式
 # 这是推荐的配置格式，支持嵌套工作流和详细的参数配置
 [workflow-integration]
+# 嵌套工作流层级（可选），默认 1
+nested_worker_depth = 1
 json = """
 {
   "analyzer": {
