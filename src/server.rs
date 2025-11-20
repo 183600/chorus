@@ -1,5 +1,6 @@
 use crate::config::Config;
-use crate::workflow::{StreamCallback, WorkflowEngine, WorkflowExecutionDetails};
+use crate::llm::ChatMessage;
+use crate::workflow::{StreamCallback, WorkflowEngine, WorkflowExecutionDetails, WorkflowPrompt};
 use anyhow::Result;
 use axum::{
     extract::State,
@@ -125,17 +126,21 @@ fn chunk_text(content: &str, max_len: usize) -> Vec<String> {
     chunks
 }
 
-fn build_prompt_from_messages(messages: &[Message]) -> String {
-    messages
+fn workflow_prompt_from_messages(messages: &[Message]) -> WorkflowPrompt {
+    let chat_messages = messages
         .iter()
-        .map(|m| format!("{}: {}", m.role, m.content))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(|message| ChatMessage {
+            role: message.role.clone(),
+            content: message.content.clone(),
+        })
+        .collect();
+
+    WorkflowPrompt::from_messages(chat_messages)
 }
 
 async fn execute_workflow(
     state: &AppState,
-    prompt: String,
+    prompt: WorkflowPrompt,
     include_workflow: bool,
     stream: Option<StreamCallback>,
 ) -> Result<(String, Option<WorkflowExecutionDetails>), AppError> {
@@ -232,6 +237,7 @@ async fn generate(
     let model_name = model.unwrap_or_else(|| "chorus".to_string());
     let stream_enabled = stream.unwrap_or(false);
     let include_workflow_details = include_workflow.unwrap_or(false);
+    let workflow_prompt = WorkflowPrompt::from_text(prompt);
 
     if stream_enabled {
         let created_at = chrono::Utc::now().to_rfc3339();
@@ -239,10 +245,11 @@ async fn generate(
         let (result_tx, result_rx) = oneshot::channel();
 
         let state_clone = state.clone();
+        let prompt_for_stream = workflow_prompt.clone();
         tokio::spawn(async move {
             let result = execute_workflow(
                 &state_clone,
-                prompt,
+                prompt_for_stream,
                 include_workflow_details,
                 Some(chunk_tx.clone()),
             )
@@ -319,8 +326,13 @@ async fn generate(
         return Ok(Sse::new(sse_stream).into_response());
     }
 
-    let (response_text, workflow_details) =
-        execute_workflow(&state, prompt, include_workflow_details, None).await?;
+    let (response_text, workflow_details) = execute_workflow(
+        &state,
+        workflow_prompt,
+        include_workflow_details,
+        None,
+    )
+    .await?;
 
     Ok(Json(GenerateResponse {
         model: model_name,
@@ -343,7 +355,7 @@ async fn chat(
         req.include_workflow
     );
 
-    let prompt = build_prompt_from_messages(&req.messages);
+    let workflow_prompt = workflow_prompt_from_messages(&req.messages);
 
     let model_name = req.model.unwrap_or_else(|| "chorus".to_string());
     let stream_enabled = req.stream.unwrap_or(false);
@@ -355,10 +367,11 @@ async fn chat(
         let (result_tx, result_rx) = oneshot::channel();
 
         let state_clone = state.clone();
+        let prompt_for_stream = workflow_prompt.clone();
         tokio::spawn(async move {
             let result = execute_workflow(
                 &state_clone,
-                prompt,
+                prompt_for_stream,
                 include_workflow_details,
                 Some(chunk_tx.clone()),
             )
@@ -449,8 +462,13 @@ async fn chat(
         return Ok(Sse::new(sse_stream).into_response());
     }
 
-    let (response_text, workflow_details) =
-        execute_workflow(&state, prompt, include_workflow_details, None).await?;
+    let (response_text, workflow_details) = execute_workflow(
+        &state,
+        workflow_prompt,
+        include_workflow_details,
+        None,
+    )
+    .await?;
 
     Ok(Json(ChatResponse {
         model: model_name,
@@ -476,7 +494,7 @@ async fn openai_chat_completions(
         req.stream
     );
 
-    let prompt = build_prompt_from_messages(&req.messages);
+    let workflow_prompt = workflow_prompt_from_messages(&req.messages);
 
     let model_name = req.model.unwrap_or_else(|| "chorus".to_string());
     let stream_enabled = req.stream.unwrap_or(false);
@@ -490,10 +508,11 @@ async fn openai_chat_completions(
         let (result_tx, result_rx) = oneshot::channel();
 
         let state_clone = state.clone();
+        let prompt_for_stream = workflow_prompt.clone();
         tokio::spawn(async move {
             let result = execute_workflow(
                 &state_clone,
-                prompt,
+                prompt_for_stream,
                 include_workflow_details,
                 Some(chunk_tx.clone()),
             )
@@ -619,8 +638,13 @@ async fn openai_chat_completions(
         return Ok(Sse::new(sse_stream).into_response());
     }
 
-    let (response_text, workflow_details) =
-        execute_workflow(&state, prompt, include_workflow_details, None).await?;
+    let (response_text, workflow_details) = execute_workflow(
+        &state,
+        workflow_prompt,
+        include_workflow_details,
+        None,
+    )
+    .await?;
     let now = chrono::Utc::now();
     let created = now.timestamp();
     let id = format!("chatcmpl_{}", now.timestamp_millis());
@@ -652,7 +676,7 @@ async fn openai_completions(
         req.stream
     );
 
-    let prompt = req.prompt.into_prompt();
+    let workflow_prompt = WorkflowPrompt::from_text(req.prompt.into_prompt());
     let model_name = req.model.unwrap_or_else(|| "chorus".to_string());
     let stream_enabled = req.stream.unwrap_or(false);
     let include_workflow_details = req.include_workflow.unwrap_or(false);
@@ -665,10 +689,11 @@ async fn openai_completions(
         let (result_tx, result_rx) = oneshot::channel();
 
         let state_clone = state.clone();
+        let prompt_for_stream = workflow_prompt.clone();
         tokio::spawn(async move {
             let result = execute_workflow(
                 &state_clone,
-                prompt,
+                prompt_for_stream,
                 include_workflow_details,
                 Some(chunk_tx.clone()),
             )
@@ -775,8 +800,13 @@ async fn openai_completions(
         return Ok(Sse::new(sse_stream).into_response());
     }
 
-    let (response_text, workflow_details) =
-        execute_workflow(&state, prompt, include_workflow_details, None).await?;
+    let (response_text, workflow_details) = execute_workflow(
+        &state,
+        workflow_prompt,
+        include_workflow_details,
+        None,
+    )
+    .await?;
 
     let now = chrono::Utc::now();
     let created = now.timestamp();
@@ -862,18 +892,27 @@ fn extract_text_value(value: &Value) -> Option<String> {
     }
 }
 
-fn extract_message_text(value: &Value) -> Option<String> {
+fn extract_chat_message_from_value(value: &Value) -> Option<ChatMessage> {
     if let Value::Object(map) = value {
-        let role = match map.get("role").and_then(|v| v.as_str()) {
-            Some(role) => role,
-            None => return None,
-        };
+        let role = map.get("role").and_then(|v| v.as_str())?;
         if let Some(content) = map.get("content") {
             if let Some(text) = extract_text_value(content) {
-                if text.is_empty() {
-                    return None;
+                if !text.is_empty() {
+                    return Some(ChatMessage {
+                        role: role.to_string(),
+                        content: text,
+                    });
                 }
-                return Some(format!("{}: {}", role, text));
+            }
+        }
+        if let Some(parts) = map.get("parts") {
+            if let Some(text) = extract_text_value(parts) {
+                if !text.is_empty() {
+                    return Some(ChatMessage {
+                        role: role.to_string(),
+                        content: text,
+                    });
+                }
             }
         }
         if let Some(Value::String(text)) = map.get("text") {
@@ -881,80 +920,100 @@ fn extract_message_text(value: &Value) -> Option<String> {
             if trimmed.is_empty() {
                 return None;
             }
-            return Some(format!("{}: {}", role, trimmed));
+            return Some(ChatMessage {
+                role: role.to_string(),
+                content: trimmed.to_string(),
+            });
         }
     }
     None
 }
 
-fn extract_prompt_from_responses_body(payload: &Value) -> Option<String> {
-    let mut segments: Vec<String> = Vec::new();
-
-    if let Some(Value::String(instr)) = payload.get("instructions") {
-        let trimmed = instr.trim();
-        if !trimmed.is_empty() {
-            segments.push(format!("system: {}", trimmed));
-        }
+fn append_chat_messages_from_value(value: &Value, default_role: &str, output: &mut Vec<ChatMessage>) {
+    if let Some(message) = extract_chat_message_from_value(value) {
+        output.push(message);
+        return;
     }
 
-    if let Some(Value::Array(messages)) = payload.get("messages") {
-        for msg in messages {
-            if let Some(text) = extract_message_text(msg) {
-                segments.push(text);
-            } else if let Some(text) = extract_text_value(msg) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                append_chat_messages_from_value(item, default_role, output);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(messages) = map.get("messages") {
+                append_chat_messages_from_value(messages, default_role, output);
+                return;
+            }
+            if let Some(content) = map.get("content") {
+                append_chat_messages_from_value(content, default_role, output);
+                return;
+            }
+            if let Some(parts) = map.get("parts") {
+                append_chat_messages_from_value(parts, default_role, output);
+                return;
+            }
+            if let Some(Value::String(text)) = map.get("text") {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    return;
+                }
+                output.push(ChatMessage {
+                    role: default_role.to_string(),
+                    content: trimmed.to_string(),
+                });
+                return;
+            }
+            if let Some(text) = extract_text_value(value) {
                 if !text.is_empty() {
-                    segments.push(text);
+                    output.push(ChatMessage {
+                        role: default_role.to_string(),
+                        content: text,
+                    });
                 }
             }
+        }
+        _ => {
+            if let Some(text) = extract_text_value(value) {
+                if !text.is_empty() {
+                    output.push(ChatMessage {
+                        role: default_role.to_string(),
+                        content: text,
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn extract_workflow_prompt_from_responses_body(payload: &Value) -> Option<WorkflowPrompt> {
+    let mut messages: Vec<ChatMessage> = Vec::new();
+
+    if let Some(instructions) = payload.get("instructions") {
+        append_chat_messages_from_value(instructions, "system", &mut messages);
+    }
+
+    if let Some(Value::Array(existing_messages)) = payload.get("messages") {
+        for msg in existing_messages {
+            append_chat_messages_from_value(msg, "user", &mut messages);
         }
     }
 
     if let Some(input) = payload.get("input") {
-        match input {
-            Value::String(s) => {
-                let trimmed = s.trim();
-                if !trimmed.is_empty() {
-                    segments.push(trimmed.to_string());
-                }
-            }
-            Value::Array(items) => {
-                for item in items {
-                    if let Some(text) = extract_message_text(item) {
-                        segments.push(text);
-                    } else if let Some(text) = extract_text_value(item) {
-                        if !text.is_empty() {
-                            segments.push(text);
-                        }
-                    }
-                }
-            }
-            Value::Object(_) => {
-                if let Some(text) = extract_message_text(input) {
-                    segments.push(text);
-                } else if let Some(text) = extract_text_value(input) {
-                    if !text.is_empty() {
-                        segments.push(text);
-                    }
-                }
-            }
-            _ => {}
-        }
+        append_chat_messages_from_value(input, "user", &mut messages);
     }
 
     for key in ["prompt", "input_text"] {
         if let Some(value) = payload.get(key) {
-            if let Some(text) = extract_text_value(value) {
-                if !text.is_empty() {
-                    segments.push(text);
-                }
-            }
+            append_chat_messages_from_value(value, "user", &mut messages);
         }
     }
 
-    if segments.is_empty() {
+    if messages.is_empty() {
         None
     } else {
-        Some(segments.join("\n"))
+        Some(WorkflowPrompt::from_messages(messages))
     }
 }
 
@@ -985,13 +1044,13 @@ async fn responses(
         include_workflow_details
     );
 
-    let prompt = extract_prompt_from_responses_body(&req).ok_or_else(|| {
+    let workflow_prompt = extract_workflow_prompt_from_responses_body(&req).ok_or_else(|| {
         AppError::bad_request(anyhow::anyhow!(
             "invalid request: missing input/messages/prompt/instructions"
         ))
     })?;
 
-    let prompt_len = prompt.len();
+    let prompt_len = workflow_prompt.rendered().len();
 
     if stream_requested {
         let now = chrono::Utc::now();
@@ -1002,7 +1061,7 @@ async fn responses(
         let (result_tx, result_rx) = oneshot::channel();
 
         let state_clone = state.clone();
-        let prompt_for_stream = prompt.clone();
+        let prompt_for_stream = workflow_prompt.clone();
         tokio::spawn(async move {
             let result = execute_workflow(
                 &state_clone,
@@ -1180,8 +1239,13 @@ async fn responses(
         return Ok(Sse::new(sse_stream).into_response());
     }
 
-    let (response_text, workflow_details) =
-        execute_workflow(&state, prompt, include_workflow_details, None).await?;
+    let (response_text, workflow_details) = execute_workflow(
+        &state,
+        workflow_prompt,
+        include_workflow_details,
+        None,
+    )
+    .await?;
 
     tracing::debug!(
         "Generated responses payload (prompt {} bytes, response {} bytes)",
@@ -1255,7 +1319,7 @@ async fn list_models(State(state): State<SharedState>) -> impl IntoResponse {
 
 #[cfg(test)]
 mod responses_tests {
-    use super::extract_prompt_from_responses_body;
+    use super::extract_workflow_prompt_from_responses_body;
     use serde_json::json;
 
     #[test]
@@ -1264,10 +1328,8 @@ mod responses_tests {
             "instructions": "Be helpful",
             "input": "Say hello"
         });
-        assert_eq!(
-            extract_prompt_from_responses_body(&payload).unwrap(),
-            "system: Be helpful\nSay hello"
-        );
+        let prompt = extract_workflow_prompt_from_responses_body(&payload).unwrap();
+        assert_eq!(prompt.rendered(), "system: Be helpful\nuser: Say hello");
     }
 
     #[test]
@@ -1288,10 +1350,8 @@ mod responses_tests {
                 }
             ]
         });
-        assert_eq!(
-            extract_prompt_from_responses_body(&payload).unwrap(),
-            "user: Hi there\nassistant: Hello!"
-        );
+        let prompt = extract_workflow_prompt_from_responses_body(&payload).unwrap();
+        assert_eq!(prompt.rendered(), "user: Hi there\nassistant: Hello!");
     }
 
     #[test]
@@ -1301,10 +1361,8 @@ mod responses_tests {
                 {"role": "user", "content": "ping"}
             ]
         });
-        assert_eq!(
-            extract_prompt_from_responses_body(&payload).unwrap(),
-            "user: ping"
-        );
+        let prompt = extract_workflow_prompt_from_responses_body(&payload).unwrap();
+        assert_eq!(prompt.rendered(), "user: ping");
     }
 
     #[test]
@@ -1315,10 +1373,8 @@ mod responses_tests {
                 {"type": "input_text", "text": "Second"}
             ]
         });
-        assert_eq!(
-            extract_prompt_from_responses_body(&payload).unwrap(),
-            "First\nSecond"
-        );
+        let prompt = extract_workflow_prompt_from_responses_body(&payload).unwrap();
+        assert_eq!(prompt.rendered(), "user: First\nuser: Second");
     }
 
     #[test]
@@ -1330,15 +1386,13 @@ mod responses_tests {
                 { "content": [{ "text": "Third" }] }
             ]
         });
-        assert_eq!(
-            extract_prompt_from_responses_body(&payload).unwrap(),
-            "First\nSecond\nThird"
-        );
+        let prompt = extract_workflow_prompt_from_responses_body(&payload).unwrap();
+        assert_eq!(prompt.rendered(), "user: First\nuser: Second\nuser: Third");
     }
 
     #[test]
     fn extract_prompt_returns_none_when_empty() {
-        assert!(extract_prompt_from_responses_body(&json!({})).is_none());
+        assert!(extract_workflow_prompt_from_responses_body(&json!({})).is_none());
     }
 
     #[test]

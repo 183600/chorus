@@ -102,6 +102,52 @@ pub struct SynthesizerDetails {
     pub temperature: f32,
 }
 
+#[derive(Debug, Clone)]
+pub struct WorkflowPrompt {
+    rendered_prompt: String,
+    messages: Vec<ChatMessage>,
+}
+
+impl WorkflowPrompt {
+    pub fn from_text<S: Into<String>>(text: S) -> Self {
+        let text = text.into();
+        Self {
+            rendered_prompt: text.clone(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: text,
+            }],
+        }
+    }
+
+    pub fn from_messages(messages: Vec<ChatMessage>) -> Self {
+        Self {
+            rendered_prompt: render_chat_messages(&messages),
+            messages,
+        }
+    }
+
+    pub fn rendered(&self) -> &str {
+        &self.rendered_prompt
+    }
+
+    pub fn messages(&self) -> &[ChatMessage] {
+        &self.messages
+    }
+}
+
+fn render_chat_messages(messages: &[ChatMessage]) -> String {
+    if messages.is_empty() {
+        return String::new();
+    }
+
+    messages
+        .iter()
+        .map(|message| format!("{}: {}", message.role, message.content))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub struct WorkflowEngine {
     config: Config,
     model_configs: HashMap<String, ModelConfig>,
@@ -118,19 +164,19 @@ impl WorkflowEngine {
         }
     }
 
-    pub async fn process(&self, prompt: String) -> Result<String> {
+    pub async fn process(&self, prompt: WorkflowPrompt) -> Result<String> {
         self.run_plan(&self.config.workflow_integration, &prompt, 0, None)
             .await
     }
 
-    pub async fn process_with_details(&self, prompt: String) -> Result<WorkflowResult> {
+    pub async fn process_with_details(&self, prompt: WorkflowPrompt) -> Result<WorkflowResult> {
         self.run_plan_with_details(&self.config.workflow_integration, &prompt, 0, None)
             .await
     }
 
     pub async fn process_with_stream(
         &self,
-        prompt: String,
+        prompt: WorkflowPrompt,
         stream: Option<StreamCallback>,
     ) -> Result<String> {
         self.run_plan(&self.config.workflow_integration, &prompt, 0, stream)
@@ -139,7 +185,7 @@ impl WorkflowEngine {
 
     pub async fn process_with_details_stream(
         &self,
-        prompt: String,
+        prompt: WorkflowPrompt,
         stream: Option<StreamCallback>,
     ) -> Result<WorkflowResult> {
         self.run_plan_with_details(&self.config.workflow_integration, &prompt, 0, stream)
@@ -174,7 +220,7 @@ impl WorkflowEngine {
     async fn run_plan_with_details(
         &self,
         plan: &WorkflowPlan,
-        prompt: &str,
+        prompt: &WorkflowPrompt,
         depth: usize,
         stream: Option<StreamCallback>,
     ) -> Result<WorkflowResult> {
@@ -247,7 +293,12 @@ impl WorkflowEngine {
         let (selector_details, selected_choice) =
             if let Some(selector_target) = plan.selector.as_ref() {
                 let (details, choice) = self
-                    .execute_selector(selector_target, prompt, &worker_responses, depth)
+                    .execute_selector(
+                        selector_target,
+                        prompt.rendered(),
+                        &worker_responses,
+                        depth,
+                    )
                     .await;
                 (Some(details), choice)
             } else {
@@ -275,7 +326,7 @@ impl WorkflowEngine {
                 let (final_response, streamed) = self
                     .call_synthesizer(
                         synthesizer_target,
-                        prompt,
+                        prompt.rendered(),
                         &worker_responses,
                         selected_choice.as_ref(),
                         depth,
@@ -325,7 +376,7 @@ impl WorkflowEngine {
     async fn run_plan(
         &self,
         plan: &WorkflowPlan,
-        prompt: &str,
+        prompt: &WorkflowPrompt,
         depth: usize,
         stream: Option<StreamCallback>,
     ) -> Result<String> {
@@ -427,7 +478,7 @@ impl WorkflowEngine {
     async fn resolve_analyzer_temperature(
         &self,
         plan: &WorkflowPlan,
-        prompt: &str,
+        prompt: &WorkflowPrompt,
         depth: usize,
     ) -> Result<f32> {
         let target = &plan.analyzer;
@@ -503,7 +554,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
     "reasoning": "简短说明为什么选择这个temperature值"
 }}
 "#,
-            prompt
+            prompt.rendered()
         );
 
         let messages = vec![ChatMessage {
@@ -531,7 +582,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
     async fn run_workers(
         &self,
         plan: &WorkflowPlan,
-        prompt: &str,
+        prompt: &WorkflowPrompt,
         base_temperature: f32,
         depth: usize,
     ) -> Result<Vec<(String, String)>> {
@@ -562,7 +613,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
     async fn run_workers_with_details(
         &self,
         plan: &WorkflowPlan,
-        prompt: &str,
+        prompt: &WorkflowPrompt,
         base_temperature: f32,
         analyzer_auto: bool,
         depth: usize,
@@ -736,7 +787,7 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
     async fn call_worker_model(
         &self,
         target: &WorkflowModelTarget,
-        prompt: &str,
+        prompt: &WorkflowPrompt,
         base_temperature: f32,
         analyzer_auto: bool,
         depth: usize,
@@ -753,10 +804,14 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
             )
             .await?;
 
-        let messages = vec![ChatMessage {
-            role: "user".to_string(),
-            content: prompt.to_string(),
-        }];
+        let messages = if prompt.messages().is_empty() {
+            vec![ChatMessage {
+                role: "user".to_string(),
+                content: prompt.rendered().to_string(),
+            }]
+        } else {
+            prompt.messages().to_vec()
+        };
 
         let temperature =
             self.resolve_worker_temperature(target, model_config, base_temperature, analyzer_auto);
@@ -1632,7 +1687,7 @@ mod tests {
         let config = build_test_config_with_workers(Vec::new());
         let engine = WorkflowEngine::new(config);
         let err = engine
-            .process("hello world".to_string())
+            .process(WorkflowPrompt::from_text("hello world".to_string()))
             .await
             .expect_err("expected failure when no workers configured");
         let message = err.to_string();
@@ -1658,7 +1713,7 @@ mod tests {
         let config = build_test_config_with_workers(workers);
         let engine = WorkflowEngine::new(config);
         let err = engine
-            .process("hello world".to_string())
+            .process(WorkflowPrompt::from_text("hello world".to_string()))
             .await
             .expect_err("expected failure when worker model missing");
         let message = err.to_string();
