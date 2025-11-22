@@ -140,6 +140,23 @@ cd chorus
 
 > 提示：还可以参考 `config-json-format-example.toml` 获取嵌套工作流、域名覆盖等高级用法。
 
+#### 临时测试配置（无需覆盖默认文件）
+
+在联调或验收过程中，经常会收到一份“只在当前周期有效”的配置（比如本工单里附带的示例）。现在可以通过 CLI 参数或环境变量临时加载它，而不必改动 `~/.config/chorus/config.toml`：
+
+1. 将临时配置保存到任意位置，例如 `/tmp/chorus-temp.toml`。
+2. 启动 Chorus 时带上 `--config` 参数（优先级最高）：
+   ```bash
+   cargo run -- --config /tmp/chorus-temp.toml
+   ```
+   或者在运行编译后的二进制时使用环境变量：
+   ```bash
+   CHORUS_CONFIG=/tmp/chorus-temp.toml ./target/release/chorus
+   ```
+3. 测试完成后删除/重命名该文件即可，默认配置无需回滚，也不会把临时密钥写入版本库。
+
+> `--config` CLI 参数的优先级高于环境变量 `CHORUS_CONFIG`，两者都未设置时才会回落到 `~/.config/chorus/config.toml`。
+
 ### 启动服务
 
 ```bash
