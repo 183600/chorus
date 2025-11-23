@@ -37,11 +37,6 @@ name = "glm-4.6"
 [[model]]
 api_base = "https://apis.iflow.cn/v1"
 api_key = "your-api-key-here"
-name = "deepseek-v3.2"
-
-[[model]]
-api_base = "https://apis.iflow.cn/v1"
-api_key = "your-api-key-here"
 name = "deepseek-v3.1"
 
 [[model]]
@@ -69,7 +64,7 @@ json = """{
   },
   "workers": [
     {
-      "name": "deepseek-v3.2",
+      "name": "deepseek-v3.1",
       "temperature": 1
     },
     {
@@ -83,7 +78,7 @@ json = """{
           "temperature": 1
         },
         {
-          "name": "deepseek-v3.2",
+          "name": "deepseek-v3.1",
           "temperature": 1
         },
         {
@@ -644,8 +639,9 @@ where
 
     match PlanInput::deserialize(deserializer)? {
         PlanInput::Json(wrapper) => {
-            let mut plan = WorkflowPlan::from_json_str(&wrapper.json)
-                .map_err(|err| DeError::custom(format!("Failed to parse workflow json: {}", err)))?;
+            let mut plan = WorkflowPlan::from_json_str(&wrapper.json).map_err(|err| {
+                DeError::custom(format!("Failed to parse workflow json: {}", err))
+            })?;
             let depth = wrapper.nested_worker_depth.unwrap_or(1);
             plan.apply_nested_worker_depth(depth).map_err(|err| {
                 DeError::custom(format!("Failed to apply nested_worker_depth: {}", err))

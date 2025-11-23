@@ -23,7 +23,7 @@ auto_temperature = true  # 由分析器模型自动决定 temperature
 [[model]]
 api_base = "https://apis.iflow.cn/v1"
 api_key = "your-api-key-here"
-name = "deepseek-v3.2"
+name = "deepseek-v3.1"
 # 不设置 temperature 和 auto_temperature，将使用默认值 1.4
 
 # 示例4：同时设置两个参数（temperature 优先级更高）
@@ -45,7 +45,7 @@ json = """{
   },
   "workers": [
     {
-      "name": "deepseek-v3.2",
+      "name": "deepseek-v3.1",
       "temperature": 1
     },
     {
@@ -59,7 +59,7 @@ json = """{
           "temperature": 1
         },
         {
-          "name": "deepseek-v3.2",
+          "name": "deepseek-v3.1",
           "temperature": 1
         },
         {

@@ -25,11 +25,6 @@ name = "glm-4.6"
 [[model]]
 api_base = "https://apis.iflow.cn/v1"
 api_key = "your-api-key-here"
-name = "deepseek-v3.2"
-
-[[model]]
-api_base = "https://apis.iflow.cn/v1"
-api_key = "your-api-key-here"
 name = "deepseek-v3.1"
 
 [[model]]
@@ -55,7 +50,7 @@ json = """
   },
   "workers": [
     {
-      "name": "deepseek-v3.2",
+      "name": "deepseek-v3.1",
       "temperature": 1
     },
     {
@@ -69,7 +64,7 @@ json = """
           "temperature": 1
         },
         {
-          "name": "deepseek-v3.2",
+          "name": "deepseek-v3.1",
           "temperature": 1
         },
         {
