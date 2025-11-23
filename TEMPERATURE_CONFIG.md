@@ -71,7 +71,7 @@ auto_temperature = true  # 由分析器自动决定
 [[model]]
 api_base = "https://apis.iflow.cn/v1"
 api_key = "your-api-key-here"
-name = "deepseek-v3.2"
+name = "deepseek-v3.1"
 # 不设置任何 temperature 参数，将使用默认值 1.4
 ```
 
@@ -94,7 +94,7 @@ temperature = 0.8
 
 # 其他工作模型使用默认值
 [[model]]
-name = "deepseek-v3.2"
+name = "deepseek-v3.1"
 ```
 
 ## 优先级规则

@@ -123,11 +123,6 @@ name = "deepseek-r1"
 [[model]]
 api_base = "https://apis.iflow.cn/v1"
 api_key = "k"
-name = "deepseek-v3.2"
-
-[[model]]
-api_base = "https://apis.iflow.cn/v1"
-api_key = "k"
 name = "kimi-k2-0905"
 
 [[model]]
@@ -153,7 +148,7 @@ json = """{
   },
   "workers": [
     {
-      "name": "deepseek-v3.2",
+      "name": "deepseek-v3.1",
       "temperature": 1
     },
     {
@@ -167,7 +162,7 @@ json = """{
           "temperature": 1
         },
         {
-          "name": "deepseek-v3.2",
+          "name": "deepseek-v3.1",
           "temperature": 1
         },
         {
@@ -881,11 +876,6 @@ name = "glm-4.6"
 [[model]]
 api_base = "https://apis.iflow.cn/v1"
 api_key = "sk-test"
-name = "deepseek-v3.2"
-
-[[model]]
-api_base = "https://apis.iflow.cn/v1"
-api_key = "sk-test"
 name = "deepseek-v3.1"
 
 [[model]]
@@ -930,9 +920,6 @@ json = """
       "name": "glm-4.6"
     },
     {
-      "name": "deepseek-v3.2"
-    },
-    {
       "name": "deepseek-v3.1"
     },
     {
@@ -947,7 +934,7 @@ json = """
 
         let cfg: Config = toml::from_str(USER_CFG).unwrap();
 
-        assert_eq!(cfg.models.len(), 8);
+        assert_eq!(cfg.models.len(), 7);
         assert_eq!(cfg.workflow_integration.analyzer.model, "glm-4.6");
         assert_eq!(
             cfg.workflow_integration
@@ -956,7 +943,7 @@ json = """
                 .map(|t| t.model.as_str()),
             Some("glm-4.6")
         );
-        assert_eq!(cfg.workflow_integration.workers.len(), 7);
+        assert_eq!(cfg.workflow_integration.workers.len(), 6);
 
         let worker_names: Vec<String> = cfg
             .workflow_integration
@@ -974,7 +961,6 @@ json = """
                 "qwen3-max",
                 "kimi-k2-0905",
                 "glm-4.6",
-                "deepseek-v3.2",
                 "deepseek-v3.1",
                 "deepseek-r1",
                 "ring-1t"

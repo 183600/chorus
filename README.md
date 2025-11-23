@@ -225,7 +225,7 @@ auto_temperature = true      # 可选：允许 analyzer 自动调节
 json = """{
   "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
   "workers": [
-    {"name": "deepseek-v3.2", "temperature": 1.0},
+    {"name": "deepseek-v3.1", "temperature": 1.0},
     {
       "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
       "workers": [
