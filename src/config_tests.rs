@@ -212,6 +212,37 @@ worker_timeout_secs = 20
 synthesizer_timeout_secs = 30
 "#;
 
+    const CFG_MISSING_MODEL: &str = r#"
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "k"
+name = "glm-4.6"
+
+[workflow-integration]
+json = """{
+  "analyzer": {
+    "ref": "glm-4.6"
+  },
+  "workers": [
+    {
+      "name": "deepseek-v3.2"
+    }
+  ],
+  "synthesizer": {
+    "ref": "glm-4.6"
+  }
+}"""
+
+[workflow.timeouts]
+analyzer_timeout_secs = 30
+worker_timeout_secs = 60
+synthesizer_timeout_secs = 90
+"#;
+
     fn simple_nested_cfg(depth: usize) -> String {
         format!(
             r#"
@@ -1155,5 +1186,26 @@ synthesizer_timeout_secs = 60
 
         let _ = fs::remove_dir_all(&temp_dir);
         drop(home_guard);
+    }
+
+    #[test]
+    fn validate_model_references_flags_missing_models() {
+        let cfg: Config = toml::from_str(CFG_MISSING_MODEL).unwrap();
+        let err = cfg
+            .validate_model_references()
+            .expect_err("expected missing model validation error");
+        let message = err.to_string();
+        assert!(
+            message.contains("deepseek-v3.2"),
+            "error message should mention missing model, got {}",
+            message
+        );
+    }
+
+    #[test]
+    fn validate_model_references_passes_when_all_models_defined() {
+        let cfg: Config = toml::from_str(CFG_NESTED).unwrap();
+        cfg.validate_model_references()
+            .expect("nested config defines all referenced models");
     }
 }
