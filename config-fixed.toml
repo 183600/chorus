@@ -1,0 +1,94 @@
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-be8afd08d80e01ea52b19016821d4338"
+name = "qwen3-235b-a22b-thinking-2507"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-be8afd08d80e01ea52b19016821d4338"
+name = "qwen3-vl-plus"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-be8afd08d80e01ea52b19016821d4338"
+name = "kimi-k2-0905"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-be8afd08d80e01ea52b19016821d4338"
+name = "glm-4.6"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-be8afd08d80e01ea52b19016821d4338"
+name = "qwen3-235b-a22b-thinking-2507"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-be8afd08d80e01ea52b19016821d4338"
+name = "deepseek-v3.1"
+
+# 修复：添加缺失的 deepseek-v3.2 模型定义
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-be8afd08d80e01ea52b19016821d4338"
+name = "deepseek-v3.2"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-be8afd08d80e01ea52b19016821d4338"
+name = "deepseek-r1"
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "sk-be8afd08d80e01ea52b19016821d4338"
+name = "qwen3-coder"
+
+[[model]]
+api_base = "https://open.bigmodel.cn/api/paas/v4"
+api_key = "b6e23abec9b746adb20cb0f3ae116f8e.LIlANJZWSUCbXLnX"
+name = "glm-4.5-flash"
+
+[[model]]
+api_base = "https://api.tbox.cn/api/llm/v1"
+api_key = "sk-d627d1a5aeef410aac7cfe4edbf0489f"
+name = "ring-1t"
+
+[workflow-integration]
+# 嵌套工作流层级，1 表示 Worker 不做额外复制
+nested_worker_depth = 1
+json = """{
+  "analyzer": {
+    "ref": "glm-4.6",
+    "auto_temperature": true
+  },
+  "workers": [
+    {
+      "name": "deepseek-v3.2",
+      "temperature": 1
+    }
+  ],
+  "synthesizer": {
+    "ref": "glm-4.5-flash"
+  }
+}"""
+
+[workflow.timeouts]
+# 所有超时时间单位均为秒
+analyzer_timeout_secs = 30000
+worker_timeout_secs = 30000
+synthesizer_timeout_secs = 30000
+
+[workflow.domains]
+
+[workflow.domains."api.example.com"]
+analyzer_timeout_secs = 30000
+worker_timeout_secs = 30000
+
+[workflow.domains."app.example.com"]
+analyzer_timeout_secs = 30000
+synthesizer_timeout_secs = 30000
