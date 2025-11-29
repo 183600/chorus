@@ -491,7 +491,7 @@ RUST_LOG=debug cargo run
 | API Key 无效 | `LLM API request failed with status 401` | 检查 `api_key` 是否正确、是否具备访问权限。 |
 | 请求超时 | `request timeout` | 增加 `workflow.timeouts` 或域名覆盖，确认网络状况。 |
 | 端口冲突 | `Address already in use` | 修改配置端口或释放 11435 端口。 |
-| 模型未在配置中定义 | `Model 'xxx' not found in configuration. Did you define it under [[model]]?` 或 `Worker lookup failed worker=xxx` | 确认 workflow 中引用的所有模型名称（analyzer / workers / synthesizer）在 `[[model]]` 段都有一致的 `name` 字段；若缺少则新增对应模型配置，修改后重启服务。 |
+| 模型未在配置中定义 | `Workflow configuration references undefined model(s): deepseek-v3.2`、`Model 'xxx' not found in configuration. Did you define it under [[model]]?` 或 `Worker lookup failed worker=xxx` | 确认 workflow 中引用的所有模型名称（analyzer / workers / synthesizer）在 `[[model]]` 段都有一致的 `name` 字段；若缺少则新增对应模型配置，修改后重启服务。 |
 | 所有工作节点失败 | `All worker models failed` | 核对网络、配额或模型状态，并查看 `RUST_LOG=debug` 日志。 |
 
 ## 安全建议

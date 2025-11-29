@@ -4,6 +4,10 @@
 
 终端显示错误：
 ```
+Workflow configuration references undefined model(s): deepseek-v3.2. Please add matching [[model]] entries for each missing name.
+```
+或在旧版本中会报：
+```
 Worker lookup failed worker=deepseek-v3.2 depth=0 error=Model 'deepseek-v3.2' not found in configuration. Did you define it under [[model]]?
 ```
 
@@ -21,6 +25,8 @@ api_base = "https://apis.iflow.cn/v1"
 api_key = "your-api-key-here"
 name = "deepseek-v3.2"
 ```
+
+> 现在 Chorus 会在启动阶段自动校验 workflow 中引用的模型是否都在 `[[model]]` 段定义。如果缺少，会直接抛出上述 `Workflow configuration references undefined model(s)` 错误，避免等到 API 请求时才失败。
 
 ## 完整配置示例
 
