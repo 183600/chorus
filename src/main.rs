@@ -99,11 +99,7 @@ fn parse_config_override_from_args(args: &[String]) -> Result<Option<String>> {
     Ok(override_path)
 }
 
-fn set_config_override(
-    target: &mut Option<String>,
-    candidate: &str,
-    flag: &str,
-) -> Result<()> {
+fn set_config_override(target: &mut Option<String>, candidate: &str, flag: &str) -> Result<()> {
     if candidate.trim().is_empty() {
         return Err(anyhow!("{} flag requires a non-empty file path", flag));
     }
