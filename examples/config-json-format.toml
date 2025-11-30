@@ -1,0 +1,28 @@
+# Minimal configuration showing JSON workflow format
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+name = "default"
+api_base = "http://localhost:11434"
+api_key = "ollama"
+auto_temperature = true
+
+[workflow-integration]
+nested_worker_depth = 1
+json = """
+{
+  "analyzer": {"ref": "default"},
+  "workers": [
+    {"ref": "default", "temperature": 1.4}
+  ],
+  "selector": {"ref": "default"},
+  "synthesizer": {"ref": "default"}
+}
+"""
+
+[workflow.timeouts]
+analyzer_timeout_secs = 30
+worker_timeout_secs = 60
+synthesizer_timeout_secs = 60

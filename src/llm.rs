@@ -1,773 +1,269 @@
-use anyhow::{anyhow, Context, Result};
-use futures::StreamExt;
-use reqwest::Client;
+use crate::error::AppError;
+use reqwest::{Client, RequestBuilder};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::Value;
 use std::time::Duration;
-use tokio::sync::mpsc::UnboundedSender;
+use tracing::{debug, error, info_span, Instrument};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub role: String,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct ChatResponse {
-    pub id: Option<String>,
-    pub object: Option<String>,
-    pub created: Option<i64>,
-    pub model: Option<String>,
-    pub choices: Vec<Choice>,
-    pub usage: Option<Usage>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct Choice {
-    pub index: i32,
-    pub message: ChatMessage,
-    pub finish_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct Usage {
-    pub prompt_tokens: Option<i32>,
-    pub completion_tokens: Option<i32>,
-    pub total_tokens: Option<i32>,
-}
-
-#[derive(Debug)]
-pub struct CompletionResult {
-    pub content: String,
-    pub streamed: bool,
-}
-
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LLMClient {
     client: Client,
-    api_base: String,
-    api_key: String,
 }
 
 impl LLMClient {
-    pub fn new(api_base: String, api_key: String, timeout_secs: u64) -> Result<Self> {
+    pub fn new() -> Result<Self, AppError> {
         let client = Client::builder()
-            .timeout(Duration::from_secs(timeout_secs))
+            .use_rustls_tls()
+            .timeout(Duration::from_secs(120))
+            .pool_idle_timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(10)
             .build()
-            .with_context(|| format!("Failed to build HTTP client for {}", api_base))?;
+            .map_err(|e| AppError::LLMError(format!("Failed to build HTTP client: {}", e)))?;
 
-        Ok(Self {
-            client,
-            api_base,
-            api_key,
-        })
+        Ok(Self { client })
     }
 
-    pub async fn chat_completion(
+    pub async fn generate(
         &self,
-        model: &str,
-        messages: Vec<ChatMessage>,
-        temperature: Option<f32>,
-    ) -> Result<String> {
-        let result = self
-            .chat_completion_with_stream(model, messages, temperature, None)
-            .await?;
-        Ok(result.content)
+        api_base: &str,
+        api_key: &str,
+        request: &GenerateRequest,
+    ) -> Result<GenerateResponse, AppError> {
+        let url = format!("{}/api/generate", api_base.trim_end_matches('/'));
+        
+        let payload = serde_json::to_string(&request)
+            .map_err(|e| AppError::LLMError(format!("Failed to serialize request: {}", e)))?;
+
+        // Log sanitized payload
+        debug!(
+            url = %url,
+            payload = %self.sanitize_payload(&payload),
+            "Sending generate request"
+        );
+
+        let request_builder = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .body(payload);
+
+        self.execute_request(request_builder, "generate").await
     }
 
-    pub async fn chat_completion_with_stream(
+    pub async fn chat(
         &self,
-        model: &str,
-        messages: Vec<ChatMessage>,
-        temperature: Option<f32>,
-        stream: Option<UnboundedSender<String>>,
-    ) -> Result<CompletionResult> {
-        let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
+        api_base: &str,
+        api_key: &str,
+        request: &ChatRequest,
+    ) -> Result<ChatResponse, AppError> {
+        let url = format!("{}/api/chat", api_base.trim_end_matches('/'));
+        
+        let payload = serde_json::to_string(&request)
+            .map_err(|e| AppError::LLMError(format!("Failed to serialize request: {}", e)))?;
 
-        let request_body = json!({
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "stream": stream.is_some(),
-        });
+        debug!(
+            url = %url,
+            payload = %self.sanitize_payload(&payload),
+            "Sending chat request"
+        );
 
-        tracing::debug!("Calling LLM API: {} with model: {}", url, model);
-        tracing::debug!(
-            "Request body: {}",
-            serde_json::to_string_pretty(&request_body)?
+        let request_builder = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .body(payload);
+
+        self.execute_request(request_builder, "chat").await
+    }
+
+    pub async fn chat_stream(
+        &self,
+        api_base: &str,
+        api_key: &str,
+        request: &ChatRequest,
+    ) -> Result<impl futures::Stream<Item = Result<ChatStreamChunk, AppError>>, AppError> {
+        let url = format!("{}/api/chat", api_base.trim_end_matches('/'));
+        
+        let mut request = request.clone();
+        request.stream = true;
+
+        let payload = serde_json::to_string(&request)
+            .map_err(|e| AppError::LLMError(format!("Failed to serialize request: {}", e)))?;
+
+        debug!(
+            url = %url,
+            payload = %self.sanitize_payload(&payload),
+            "Sending streaming chat request"
         );
 
         let response = self
             .client
             .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request_body)
+            .body(payload)
             .send()
-            .await?;
+            .await
+            .map_err(|e| AppError::HttpError(format!("Request failed: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let error_text = response.text().await?;
-            return Err(anyhow!(
-                "LLM API request failed with status {}: {}",
-                status,
-                error_text
-            ));
+            let body = response.text().await.unwrap_or_default();
+            return Err(AppError::LLMError(format!(
+                "Streaming request failed with status {}: {}",
+                status, body
+            )));
         }
 
-        if stream.is_some() && response_is_event_stream(&response) {
-            return self.consume_event_stream(response, stream).await;
-        }
+        let stream = response.bytes_stream().map(|chunk| {
+            chunk
+                .map_err(|e| AppError::HttpError(format!("Stream error: {}", e)))
+                .and_then(|bytes| {
+                    let line = String::from_utf8_lossy(&bytes);
+                    debug!("Received stream chunk: {}", line.trim());
+                    
+                    if line.starts_with("data: ") {
+                        let json_str = line.trim_start_matches("data: ").trim();
+                        if json_str == "[DONE]" {
+                            Ok(ChatStreamChunk::Done)
+                        } else {
+                            serde_json::from_str(json_str)
+                                .map(ChatStreamChunk::Data)
+                                .map_err(AppError::JsonParse)
+                        }
+                    } else {
+                        Ok(ChatStreamChunk::Empty)
+                    }
+                })
+        });
 
-        // Be tolerant to different provider response shapes
-        let v: serde_json::Value = response.json().await?;
-
-        if let Some(content) = extract_completion_text(&v) {
-            if let Some(sender) = stream.as_ref() {
-                let _ = sender.send(content.clone());
-            }
-            return Ok(CompletionResult {
-                content,
-                streamed: false,
-            });
-        }
-
-        if let Some(err_msg) = detect_provider_error(&v) {
-            return Err(anyhow!(
-                "LLM provider {} (model {}) returned error: {}",
-                self.api_base,
-                model,
-                err_msg
-            ));
-        }
-
-        Err(anyhow!("LLM response missing content field: {}", v))
+        Ok(stream)
     }
 
-    async fn consume_event_stream(
+    async fn execute_request<T: serde::de::DeserializeOwned>(
         &self,
-        response: reqwest::Response,
-        stream: Option<UnboundedSender<String>>,
-    ) -> Result<CompletionResult> {
-        let mut final_text = String::new();
-        let mut streamed = false;
-        let mut buffer = String::new();
-        let mut byte_stream = response.bytes_stream();
+        request_builder: RequestBuilder,
+        operation: &str,
+    ) -> Result<T, AppError> {
+        let span = info_span!("llm_request", operation = %operation);
+        let _enter = span.enter();
 
-        while let Some(item) = byte_stream.next().await {
-            let chunk = item?;
-            let chunk_str = String::from_utf8_lossy(&chunk);
-            buffer.push_str(&chunk_str);
+        let response = request_builder
+            .send()
+            .await
+            .map_err(|e| AppError::HttpError(format!("Request failed: {}", e)))?;
 
-            loop {
-                let Some((idx, sep_len)) = find_event_separator(&buffer) else {
-                    break;
-                };
+        let status = response.status();
+        let body = response.text().await.map_err(|e| {
+            AppError::HttpError(format!("Failed to read response body: {}", e))
+        })?;
 
-                let mut event = buffer[..idx].to_string();
-                buffer.drain(..idx + sep_len);
-
-                if event.trim().is_empty() {
-                    continue;
-                }
-
-                if event.ends_with('\r') {
-                    event.pop();
-                }
-
-                let mut data_payload = String::new();
-                for line in event.lines() {
-                    if let Some(rest) = line.strip_prefix("data:") {
-                        if !data_payload.is_empty() {
-                            data_payload.push('\n');
-                        }
-                        data_payload.push_str(rest.trim_start());
-                    }
-                }
-
-                if data_payload.is_empty() {
-                    continue;
-                }
-
-                let trimmed = data_payload.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-
-                if trimmed == "[DONE]" {
-                    return Ok(CompletionResult {
-                        content: final_text,
-                        streamed,
-                    });
-                }
-
-                match serde_json::from_str::<serde_json::Value>(trimmed) {
-                    Ok(value) => {
-                        if let Some(text) = extract_stream_content(&value)
-                            .or_else(|| extract_completion_text(&value))
-                        {
-                            if let Some(sender) = stream.as_ref() {
-                                let _ = sender.send(text.clone());
-                            }
-                            if !text.is_empty() {
-                                final_text.push_str(&text);
-                                streamed = true;
-                            }
-                        }
-
-                        if let Some(reason) = value
-                            .get("choices")
-                            .and_then(|c| c.get(0))
-                            .and_then(|c0| c0.get("finish_reason"))
-                            .and_then(|r| r.as_str())
-                        {
-                            if !reason.is_empty() && reason != "null" {
-                                return Ok(CompletionResult {
-                                    content: final_text,
-                                    streamed,
-                                });
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        if let Some(sender) = stream.as_ref() {
-                            let _ = sender.send(trimmed.to_string());
-                        }
-                        if !trimmed.is_empty() {
-                            final_text.push_str(trimmed);
-                            streamed = true;
-                        }
-                    }
-                }
-            }
+        if !status.is_success() {
+            error!(
+                status = %status,
+                body = %body,
+                "LLM API returned error"
+            );
+            return Err(AppError::LLMError(format!(
+                "API returned status {}: {}",
+                status, body
+            )));
         }
 
-        Ok(CompletionResult {
-            content: final_text,
-            streamed,
+        serde_json::from_str(&body).map_err(|e| {
+            error!("Failed to parse response: {}", e);
+            AppError::JsonParse(e)
         })
     }
-}
 
-fn response_is_event_stream(response: &reqwest::Response) -> bool {
-    response
-        .headers()
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .map(|content_type| content_type.contains("text/event-stream"))
-        .unwrap_or(false)
-}
-
-fn find_event_separator(buffer: &str) -> Option<(usize, usize)> {
-    if let Some(idx) = buffer.find("\r\n\r\n") {
-        Some((idx, 4))
-    } else {
-        buffer.find("\n\n").map(|idx| (idx, 2))
-    }
-}
-
-fn extract_completion_text(value: &serde_json::Value) -> Option<String> {
-    let choice = value.get("choices").and_then(|c| c.get(0));
-
-    if let Some(choice) = choice {
-        if let Some(message) = choice.get("message") {
-            if let Some(content) = message.get("content") {
-                if let Some(text) = normalize_content_value(content) {
-                    if !text.is_empty() {
-                        return Some(text);
+    fn sanitize_payload(&self, payload: &str) -> String {
+        // Simple heuristic to truncate long prompts while preserving structure
+        if payload.len() > 200 {
+            if let Ok(json) = serde_json::from_str::<Value>(payload) {
+                if let Some(mut obj) = json.as_object().cloned() {
+                    // Truncate prompt/messages fields
+                    if let Some(prompt) = obj.get("prompt").and_then(|p| p.as_str()) {
+                        if prompt.len() > 100 {
+                            obj.insert(
+                                "prompt".to_string(),
+                                Value::String(format!("{}...<truncated>", &prompt[..100])),
+                            );
+                        }
                     }
-                }
-            }
-            if let Some(reasoning) = message.get("reasoning_content") {
-                if let Some(text) = normalize_content_value(reasoning) {
-                    if !text.is_empty() {
-                        return Some(text);
+                    if let Some(messages) = obj.get_mut("messages").and_then(|m| m.as_array_mut()) {
+                        for msg in messages.iter_mut() {
+                            if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
+                                if content.len() > 100 {
+                                    msg["content"] = Value::String(format!(
+                                        "{}...<truncated>",
+                                        &content[..100]
+                                    ));
+                                }
+                            }
+                        }
                     }
+                    return serde_json::to_string(&obj).unwrap_or_else(|_| "<truncated>".to_string());
                 }
             }
-            if let Some(reasoning) = message.get("reasoning") {
-                if let Some(text) = normalize_content_value(reasoning) {
-                    if !text.is_empty() {
-                        return Some(text);
-                    }
-                }
-            }
-        }
-
-        if let Some(text) = choice.get("text").and_then(|t| t.as_str()) {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
-    }
-
-    if let Some(text) = value
-        .get("output_text")
-        .and_then(|t| normalize_content_value(t))
-    {
-        if !text.is_empty() {
-            return Some(text);
-        }
-    }
-
-    if let Some(obj) = value
-        .get("choices")
-        .and_then(|c| c.get(0))
-        .and_then(|c0| c0.get("message"))
-    {
-        return Some(obj.to_string());
-    }
-
-    None
-}
-
-fn extract_stream_content(value: &serde_json::Value) -> Option<String> {
-    let choice = value.get("choices")?.get(0)?;
-
-    if let Some(delta) = choice.get("delta") {
-        if let Some(content) = delta.get("content") {
-            if let Some(text) = normalize_content_value(content) {
-                if !text.is_empty() {
-                    return Some(text);
-                }
-            }
-        }
-        if let Some(reasoning) = delta.get("reasoning_content") {
-            if let Some(text) = normalize_content_value(reasoning) {
-                if !text.is_empty() {
-                    return Some(text);
-                }
-            }
-        }
-        if let Some(analysis) = delta.get("analysis") {
-            if let Some(text) = normalize_content_value(analysis) {
-                if !text.is_empty() {
-                    return Some(text);
-                }
-            }
-        }
-        if let Some(reasoning) = delta.get("reasoning") {
-            if let Some(text) = normalize_content_value(reasoning) {
-                if !text.is_empty() {
-                    return Some(text);
-                }
-            }
-        }
-    }
-
-    if let Some(text) = choice.get("text").and_then(|t| t.as_str()) {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            None
+            format!("{}...<truncated {} bytes>", &payload[..200], payload.len())
         } else {
-            Some(trimmed.to_string())
-        }
-    } else {
-        None
-    }
-}
-
-fn normalize_content_value(value: &serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::Null => None,
-        serde_json::Value::String(s) => {
-            if s.is_empty() {
-                None
-            } else {
-                Some(s.to_string())
-            }
-        }
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        serde_json::Value::Bool(b) => Some(b.to_string()),
-        serde_json::Value::Array(items) => {
-            let mut out = String::new();
-            for item in items {
-                if let Some(piece) = normalize_content_value(item) {
-                    out.push_str(&piece);
-                }
-            }
-            if out.is_empty() {
-                None
-            } else {
-                Some(out)
-            }
-        }
-        serde_json::Value::Object(map) => {
-            for key in ["text", "content", "value", "message"] {
-                if let Some(inner) = map.get(key) {
-                    if let Some(text) = normalize_content_value(inner) {
-                        if !text.is_empty() {
-                            return Some(text);
-                        }
-                    }
-                }
-            }
-
-            if let Some(parts) = map.get("parts") {
-                if let Some(text) = normalize_content_value(parts) {
-                    if !text.is_empty() {
-                        return Some(text);
-                    }
-                }
-            }
-
-            if let Some(messages) = map.get("messages") {
-                if let Some(text) = normalize_content_value(messages) {
-                    if !text.is_empty() {
-                        return Some(text);
-                    }
-                }
-            }
-
-            None
+            payload.to_string()
         }
     }
 }
 
-fn detect_provider_error(value: &serde_json::Value) -> Option<String> {
-    if let Some(error_val) = value.get("error") {
-        if let Some(obj) = error_val.as_object() {
-            let message = ["message", "msg", "error_message", "error_msg", "detail"]
-                .iter()
-                .filter_map(|key| obj.get(*key))
-                .filter_map(json_value_to_string)
-                .map(|s| s.trim().to_string())
-                .find(|s| !s.is_empty());
-            let code = ["code", "status", "type"]
-                .iter()
-                .filter_map(|key| obj.get(*key))
-                .filter_map(json_value_to_string)
-                .map(|s| s.trim().to_string())
-                .find(|s| !s.is_empty());
-            if let Some(msg) = message {
-                if let Some(code_str) = code {
-                    return Some(format!("{}: {}", code_str, msg));
-                } else {
-                    return Some(msg);
-                }
-            } else {
-                return Some(error_val.to_string());
-            }
-        } else if let Some(text) = json_value_to_string(error_val) {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
-    }
-
-    if let Some(status_val) = value.get("status") {
-        if let Some(status_str) = interpret_status_like_error(status_val) {
-            let message = extract_message_fields(
-                value,
-                &[
-                    "msg",
-                    "message",
-                    "error_message",
-                    "error_msg",
-                    "cause",
-                    "detail",
-                ],
-            );
-            return Some(match message {
-                Some(msg) => format!("status {}: {}", status_str, msg),
-                None => format!("status {}", status_str),
-            });
-        }
-    }
-
-    if let Some(code_val) = value.get("code") {
-        if let Some(code_str) = interpret_status_like_error(code_val) {
-            let message = extract_message_fields(
-                value,
-                &[
-                    "message",
-                    "msg",
-                    "error_message",
-                    "error_msg",
-                    "cause",
-                    "detail",
-                ],
-            );
-            return Some(match message {
-                Some(msg) => format!("code {}: {}", code_str, msg),
-                None => format!("code {}", code_str),
-            });
-        }
-    }
-
-    if let Some(success) = value.get("success").and_then(|v| v.as_bool()) {
-        if !success {
-            if let Some(msg) = extract_message_fields(
-                value,
-                &["message", "msg", "error_message", "error_msg", "error"],
-            ) {
-                return Some(msg);
-            }
-            return Some("success flag was false".to_string());
-        }
-    }
-
-    if let Some(msg) = extract_message_fields(value, &["message", "msg"]) {
-        let lowered = msg.to_ascii_lowercase();
-        if lowered.contains("error")
-            || lowered.contains("invalid")
-            || lowered.contains("fail")
-            || lowered.contains("denied")
-            || lowered.contains("unauthorized")
-        {
-            return Some(msg);
-        }
-    }
-
-    None
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    System,
+    User,
+    Assistant,
 }
 
-fn interpret_status_like_error(value: &serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::Number(n) => {
-            if let Some(int) = n.as_i64() {
-                if int != 0 && int != 200 {
-                    return Some(int.to_string());
-                }
-            } else if let Some(f) = n.as_f64() {
-                if f != 0.0 && f != 200.0 {
-                    return Some(f.to_string());
-                }
-            }
-            None
-        }
-        serde_json::Value::String(s) => {
-            let trimmed = s.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            if let Ok(int) = trimmed.parse::<i64>() {
-                if int != 0 && int != 200 {
-                    return Some(int.to_string());
-                }
-                return None;
-            }
-            let lowered = trimmed.to_ascii_lowercase();
-            if lowered == "ok"
-                || lowered == "success"
-                || lowered == "succeeded"
-                || lowered == "true"
-                || lowered == "0"
-                || lowered == "200"
-            {
-                None
-            } else if lowered.contains("error")
-                || lowered.contains("fail")
-                || lowered.contains("invalid")
-                || lowered.contains("denied")
-                || lowered.contains("unauthorized")
-            {
-                Some(trimmed.to_string())
-            } else {
-                None
-            }
-        }
-        serde_json::Value::Bool(b) => {
-            if *b {
-                None
-            } else {
-                Some("false".to_string())
-            }
-        }
-        _ => None,
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Message {
+    pub role: Role,
+    pub content: String,
 }
 
-fn extract_message_fields(value: &serde_json::Value, fields: &[&str]) -> Option<String> {
-    for key in fields {
-        if let Some(inner) = value.get(*key) {
-            if let Some(text) = json_value_to_string(inner) {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
-                }
-            }
-        }
-    }
-    None
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerateRequest {
+    pub model: String,
+    pub prompt: String,
+    pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
 }
 
-fn json_value_to_string(value: &serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::Null => None,
-        serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        serde_json::Value::Bool(b) => Some(b.to_string()),
-        serde_json::Value::Array(items) => {
-            let mut parts = Vec::new();
-            for item in items {
-                if let Some(text) = json_value_to_string(item) {
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty() {
-                        parts.push(trimmed.to_string());
-                    }
-                }
-            }
-            if parts.is_empty() {
-                None
-            } else {
-                Some(parts.join(" "))
-            }
-        }
-        serde_json::Value::Object(map) => {
-            for key in &[
-                "message",
-                "msg",
-                "error_message",
-                "error_msg",
-                "detail",
-                "description",
-            ] {
-                if let Some(inner) = map.get(*key) {
-                    if let Some(text) = json_value_to_string(inner) {
-                        let trimmed = text.trim();
-                        if !trimmed.is_empty() {
-                            return Some(trimmed.to_string());
-                        }
-                    }
-                }
-            }
-            Some(value.to_string())
-        }
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerateResponse {
+    pub response: String,
 }
 
-pub fn parse_temperature_from_response(response: &str) -> f32 {
-    if let Some(value) = parse_temperature_from_json(response) {
-        return clamp_temperature(value);
-    }
-
-    for line in response.lines() {
-        if line.to_lowercase().contains("temperature") {
-            if let Some(value_part) = line.split_once(':').map(|x| x.1) {
-                if let Some(value) = parse_numeric_fragment(value_part) {
-                    return clamp_temperature(value);
-                }
-            }
-
-            if let Some(value) = parse_numeric_fragment(line) {
-                return clamp_temperature(value);
-            }
-        }
-    }
-
-    1.4
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatRequest {
+    pub model: String,
+    pub messages: Vec<Message>,
+    pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
 }
 
-fn parse_temperature_from_json(response: &str) -> Option<f32> {
-    let json_value = serde_json::from_str::<serde_json::Value>(response).ok()?;
-    extract_temperature_from_json(&json_value)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatResponse {
+    pub message: Message,
 }
 
-fn extract_temperature_from_json(value: &serde_json::Value) -> Option<f32> {
-    match value {
-        serde_json::Value::Object(map) => {
-            if let Some(temp_value) = map.get("temperature") {
-                return match temp_value {
-                    serde_json::Value::Number(n) => n.as_f64().map(|v| v as f32),
-                    serde_json::Value::String(s) => parse_numeric_fragment(s),
-                    _ => None,
-                };
-            }
-
-            map.values().find_map(extract_temperature_from_json)
-        }
-        serde_json::Value::Array(items) => items.iter().find_map(extract_temperature_from_json),
-        _ => None,
-    }
+#[derive(Debug)]
+pub enum ChatStreamChunk {
+    Data(ChatStreamResponse),
+    Done,
+    Empty,
 }
 
-fn parse_numeric_fragment(input: &str) -> Option<f32> {
-    let trimmed = input.trim().trim_matches(|c| c == '"' || c == '\'');
-    if let Ok(value) = trimmed.parse::<f32>() {
-        return Some(value);
-    }
-
-    trimmed
-        .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
-        .find(|segment| !segment.is_empty())
-        .and_then(|segment| segment.parse::<f32>().ok())
-}
-
-fn clamp_temperature(value: f32) -> f32 {
-    value.clamp(0.0, 2.0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_temperature_from_json_string_value() {
-        let response = r#"{"temperature":"0.65","reasoning":"ok"}"#;
-        let value = parse_temperature_from_response(response);
-        assert!((value - 0.65).abs() < 1e-6);
-    }
-
-    #[test]
-    fn parses_temperature_from_text_fragment() {
-        let response = "Temperature: \"0.42\", reasoning: details";
-        let value = parse_temperature_from_response(response);
-        assert!((value - 0.42).abs() < 1e-6);
-    }
-
-    #[test]
-    fn clamps_out_of_range_values() {
-        let response = r#"{"temperature": 3.5}"#;
-        assert_eq!(parse_temperature_from_response(response), 2.0);
-    }
-
-    #[test]
-    fn detects_status_based_error_message() {
-        let value = serde_json::json!({
-            "status": "434",
-            "msg": "Invalid apiKey"
-        });
-        let err = detect_provider_error(&value).expect("expected error");
-        assert!(err.contains("434"));
-        assert!(err.to_ascii_lowercase().contains("invalid"));
-    }
-
-    #[test]
-    fn detects_error_object_code() {
-        let value = serde_json::json!({
-            "error": {
-                "code": "invalid_api_key",
-                "message": "No API key provided"
-            }
-        });
-        let err = detect_provider_error(&value).expect("expected error");
-        assert!(err.to_ascii_lowercase().contains("invalid_api_key"));
-        assert!(err.contains("No API key provided"));
-    }
-
-    #[test]
-    fn detects_success_flag_false_message() {
-        let value = serde_json::json!({
-            "success": false,
-            "message": "Request failed"
-        });
-        let err = detect_provider_error(&value).expect("expected error");
-        assert!(err.contains("Request failed"));
-    }
-
-    #[test]
-    fn ignores_successful_status_values() {
-        let value = serde_json::json!({
-            "status": 0,
-            "msg": "ok"
-        });
-        assert!(detect_provider_error(&value).is_none());
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatStreamResponse {
+    pub message: Message,
 }

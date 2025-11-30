@@ -1,0 +1,11 @@
+# Legacy configuration for migration testing
+[server]
+host = "0.0.0.0"
+port = 3000
+
+[[model]]
+name = "legacy-model"
+api_base = "http://old-api.example.com"
+api_key = "legacy-key"
+auto_temperature = false
+temperature = 1.0
