@@ -23,7 +23,7 @@ auto_temperature = true  # 由分析器模型自动决定 temperature
 [[model]]
 api_base = "https://apis.iflow.cn/v1"
 api_key = "your-api-key-here"
-name = "deepseek-v3.2"
+name = "deepseek-v3.1"
 # 不设置 temperature 和 auto_temperature，将使用默认值 1.4
 
 # 示例4：同时设置两个参数（temperature 优先级更高）
@@ -34,8 +34,16 @@ name = "kimi-k2-0905"
 temperature = 0.5  # 固定值优先，auto_temperature 会被忽略
 auto_temperature = true
 
+# 示例5：qwen3-coder 模型配置（工作流中使用）
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "your-api-key-here"
+name = "qwen3-coder"
+
 # 新格式：将 workflow 结构存储为 JSON 字符串
 [workflow-integration]
+# 嵌套工作流层级，1 表示每个 Worker 只执行一次
+nested_worker_depth = 1
 json = """{
   "analyzer": {
     "ref": "glm-4.6",
@@ -43,7 +51,7 @@ json = """{
   },
   "workers": [
     {
-      "name": "deepseek-v3.2",
+      "name": "deepseek-v3.1",
       "temperature": 1
     },
     {
@@ -57,7 +65,7 @@ json = """{
           "temperature": 1
         },
         {
-          "name": "deepseek-v3.2",
+          "name": "deepseek-v3.1",
           "temperature": 1
         },
         {

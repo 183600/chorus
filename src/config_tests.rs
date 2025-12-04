@@ -123,11 +123,6 @@ name = "deepseek-r1"
 [[model]]
 api_base = "https://apis.iflow.cn/v1"
 api_key = "k"
-name = "deepseek-v3.2"
-
-[[model]]
-api_base = "https://apis.iflow.cn/v1"
-api_key = "k"
 name = "kimi-k2-0905"
 
 [[model]]
@@ -153,7 +148,7 @@ json = """{
   },
   "workers": [
     {
-      "name": "deepseek-v3.2",
+      "name": "deepseek-v3.1",
       "temperature": 1
     },
     {
@@ -167,7 +162,7 @@ json = """{
           "temperature": 1
         },
         {
-          "name": "deepseek-v3.2",
+          "name": "deepseek-v3.1",
           "temperature": 1
         },
         {
@@ -216,6 +211,88 @@ analyzer_timeout_secs = 10
 worker_timeout_secs = 20
 synthesizer_timeout_secs = 30
 "#;
+
+    const CFG_MISSING_MODEL: &str = r#"
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "k"
+name = "glm-4.6"
+
+[workflow-integration]
+json = """{
+  "analyzer": {
+    "ref": "glm-4.6"
+  },
+  "workers": [
+    {
+      "name": "deepseek-v3.2"
+    }
+  ],
+  "synthesizer": {
+    "ref": "glm-4.6"
+  }
+}"""
+
+[workflow.timeouts]
+analyzer_timeout_secs = 30
+worker_timeout_secs = 60
+synthesizer_timeout_secs = 90
+"#;
+
+    fn simple_nested_cfg(depth: usize) -> String {
+        format!(
+            r#"
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+api_base = "https://api.example.com/v1"
+api_key = "k"
+name = "glm-4.6"
+
+[[model]]
+api_base = "https://api.example.com/v1"
+api_key = "k"
+name = "kimi-k2-0905"
+
+[[model]]
+api_base = "https://api.example.com/v1"
+api_key = "k"
+name = "qwen3-coder"
+
+[workflow-integration]
+nested_worker_depth = {depth}
+json = """{{
+  "analyzer": {{
+    "ref": "glm-4.6"
+  }},
+  "workers": [
+    {{
+      "name": "kimi-k2-0905"
+    }},
+    {{
+      "name": "qwen3-coder",
+      "temperature": 0.6
+    }}
+  ],
+  "synthesizer": {{
+    "ref": "qwen3-coder"
+  }}
+}}"""
+
+[workflow.timeouts]
+analyzer_timeout_secs = 1
+worker_timeout_secs = 1
+synthesizer_timeout_secs = 1
+"#,
+            depth = depth
+        )
+    }
 
     #[test]
     fn nested_workflow_config_parses() {
@@ -292,6 +369,102 @@ synthesizer_timeout_secs = 30
                 .unwrap()
                 .len(),
             3
+        );
+    }
+
+    #[test]
+    fn nested_worker_depth_expands_models() {
+        let cfg: Config = toml::from_str(&simple_nested_cfg(2)).unwrap();
+
+        assert_eq!(cfg.workflow_integration.workers.len(), 2);
+
+        let first = match &cfg.workflow_integration.workers[0] {
+            WorkflowWorker::Workflow(plan) => plan.as_ref(),
+            other => panic!("expected nested workflow worker, got {:?}", other),
+        };
+        assert_eq!(first.workers.len(), 2);
+        for worker in &first.workers {
+            match worker {
+                WorkflowWorker::Model(target) => {
+                    assert_eq!(target.model, "kimi-k2-0905");
+                }
+                other => panic!("expected duplicated model worker, got {:?}", other),
+            }
+        }
+
+        let second = match &cfg.workflow_integration.workers[1] {
+            WorkflowWorker::Workflow(plan) => plan.as_ref(),
+            other => panic!("expected nested workflow worker, got {:?}", other),
+        };
+        assert_eq!(second.workers.len(), 2);
+        for worker in &second.workers {
+            match worker {
+                WorkflowWorker::Model(target) => {
+                    assert_eq!(target.model, "qwen3-coder");
+                }
+                other => panic!("expected duplicated model worker, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn nested_worker_depth_supports_multiple_layers() {
+        let cfg: Config = toml::from_str(&simple_nested_cfg(3)).unwrap();
+
+        let first = match &cfg.workflow_integration.workers[0] {
+            WorkflowWorker::Workflow(plan) => plan.as_ref(),
+            other => panic!("expected nested workflow worker, got {:?}", other),
+        };
+        assert_eq!(first.workers.len(), 2);
+        for worker in &first.workers {
+            match worker {
+                WorkflowWorker::Workflow(plan) => {
+                    assert_eq!(plan.workers.len(), 2);
+                    for leaf in &plan.workers {
+                        match leaf {
+                            WorkflowWorker::Model(target) => {
+                                assert_eq!(target.model, "kimi-k2-0905");
+                            }
+                            other => panic!("expected model worker, got {:?}", other),
+                        }
+                    }
+                }
+                other => panic!("expected nested workflow worker, got {:?}", other),
+            }
+        }
+
+        let second = match &cfg.workflow_integration.workers[1] {
+            WorkflowWorker::Workflow(plan) => plan.as_ref(),
+            other => panic!("expected nested workflow worker, got {:?}", other),
+        };
+        assert_eq!(second.workers.len(), 2);
+        for worker in &second.workers {
+            match worker {
+                WorkflowWorker::Workflow(plan) => {
+                    assert_eq!(plan.workers.len(), 2);
+                    for leaf in &plan.workers {
+                        match leaf {
+                            WorkflowWorker::Model(target) => {
+                                assert_eq!(target.model, "qwen3-coder");
+                            }
+                            other => panic!("expected model worker, got {:?}", other),
+                        }
+                    }
+                }
+                other => panic!("expected nested workflow worker, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn nested_worker_depth_rejects_zero() {
+        let cfg = simple_nested_cfg(0);
+        let err = toml::from_str::<Config>(&cfg).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("nested_worker_depth"),
+            "unexpected error message: {}",
+            message
         );
     }
 
@@ -734,11 +907,6 @@ name = "glm-4.6"
 [[model]]
 api_base = "https://apis.iflow.cn/v1"
 api_key = "sk-test"
-name = "deepseek-v3.2"
-
-[[model]]
-api_base = "https://apis.iflow.cn/v1"
-api_key = "sk-test"
 name = "deepseek-v3.1"
 
 [[model]]
@@ -783,9 +951,6 @@ json = """
       "name": "glm-4.6"
     },
     {
-      "name": "deepseek-v3.2"
-    },
-    {
       "name": "deepseek-v3.1"
     },
     {
@@ -800,7 +965,7 @@ json = """
 
         let cfg: Config = toml::from_str(USER_CFG).unwrap();
 
-        assert_eq!(cfg.models.len(), 8);
+        assert_eq!(cfg.models.len(), 7);
         assert_eq!(cfg.workflow_integration.analyzer.model, "glm-4.6");
         assert_eq!(
             cfg.workflow_integration
@@ -809,7 +974,7 @@ json = """
                 .map(|t| t.model.as_str()),
             Some("glm-4.6")
         );
-        assert_eq!(cfg.workflow_integration.workers.len(), 7);
+        assert_eq!(cfg.workflow_integration.workers.len(), 6);
 
         let worker_names: Vec<String> = cfg
             .workflow_integration
@@ -827,7 +992,6 @@ json = """
                 "qwen3-max",
                 "kimi-k2-0905",
                 "glm-4.6",
-                "deepseek-v3.2",
                 "deepseek-v3.1",
                 "deepseek-r1",
                 "ring-1t"
@@ -1022,5 +1186,26 @@ synthesizer_timeout_secs = 60
 
         let _ = fs::remove_dir_all(&temp_dir);
         drop(home_guard);
+    }
+
+    #[test]
+    fn validate_model_references_flags_missing_models() {
+        let cfg: Config = toml::from_str(CFG_MISSING_MODEL).unwrap();
+        let err = cfg
+            .validate_model_references()
+            .expect_err("expected missing model validation error");
+        let message = err.to_string();
+        assert!(
+            message.contains("deepseek-v3.2"),
+            "error message should mention missing model, got {}",
+            message
+        );
+    }
+
+    #[test]
+    fn validate_model_references_passes_when_all_models_defined() {
+        let cfg: Config = toml::from_str(CFG_NESTED).unwrap();
+        cfg.validate_model_references()
+            .expect("nested config defines all referenced models");
     }
 }

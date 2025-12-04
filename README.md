@@ -124,6 +124,7 @@ cd chorus
    auto_temperature = true
 
    [workflow-integration]
+   nested_worker_depth = 1
    json = """{
      "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
      "workers": [{"name": "qwen3-max"}],
@@ -138,6 +139,23 @@ cd chorus
    ```
 
 > 提示：还可以参考 `config-json-format-example.toml` 获取嵌套工作流、域名覆盖等高级用法。
+
+#### 临时测试配置（无需覆盖默认文件）
+
+在联调或验收过程中，经常会收到一份“只在当前周期有效”的配置（比如本工单里附带的示例）。现在可以通过 CLI 参数或环境变量临时加载它，而不必改动 `~/.config/chorus/config.toml`：
+
+1. 将临时配置保存到任意位置，例如 `/tmp/chorus-temp.toml`。
+2. 启动 Chorus 时带上 `--config` 参数（优先级最高）：
+   ```bash
+   cargo run -- --config /tmp/chorus-temp.toml
+   ```
+   或者在运行编译后的二进制时使用环境变量：
+   ```bash
+   CHORUS_CONFIG=/tmp/chorus-temp.toml ./target/release/chorus
+   ```
+3. 测试完成后删除/重命名该文件即可，默认配置无需回滚，也不会把临时密钥写入版本库。
+
+> `--config` CLI 参数的优先级高于环境变量 `CHORUS_CONFIG`，两者都未设置时才会回落到 `~/.config/chorus/config.toml`。
 
 ### 启动服务
 
@@ -207,7 +225,7 @@ auto_temperature = true      # 可选：允许 analyzer 自动调节
 json = """{
   "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
   "workers": [
-    {"name": "deepseek-v3.2", "temperature": 1.0},
+    {"name": "deepseek-v3.1", "temperature": 1.0},
     {
       "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
       "workers": [
@@ -227,6 +245,107 @@ json = """{
 - `analyzer` / `selector` / `synthesizer` 使用 `ref` 引用上方的 `[[model]]` 名称。
 - `workers` 可混合模型节点与子工作流，实现递归流程。
 - JSON 内的 `temperature` / `auto_temperature` 优先级高于模型默认值。
+
+#### 嵌套工作流层级（nested_worker_depth）
+
+`nested_worker_depth` 用来控制系统自动构建的冗余嵌套层级，默认值为 `1`，表示每个 Worker 只执行一次，与当前行为一致。当该值大于 1 时，Chorus 会在配置解析阶段为每个 Worker 包装 `n-1` 层与父级相同的 analyzer/synthesizer（或 selector），并在每一层内复制两份同样的 Worker，使得单个 Worker 的实际执行次数增至 `2^(n-1)`，便于获取更多候选答案进行甄选和综合。
+
+```toml
+[workflow-integration]
+nested_worker_depth = 1
+json = """{
+  "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+  "workers": [
+    {"name": "kimi-k2-0905"},
+    {"name": "qwen3-coder", "temperature": 0.6}
+  ],
+  "synthesizer": {"ref": "qwen3-max"}
+}"""
+```
+
+当 `nested_worker_depth = 2` 时，上述配置会被自动扩展为：
+
+```json
+{
+  "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+  "workers": [
+    {
+      "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+      "workers": [
+        {"name": "kimi-k2-0905"},
+        {"name": "kimi-k2-0905"}
+      ],
+      "synthesizer": {"ref": "qwen3-max"}
+    },
+    {
+      "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+      "workers": [
+        {"name": "qwen3-coder", "temperature": 0.6},
+        {"name": "qwen3-coder", "temperature": 0.6}
+      ],
+      "synthesizer": {"ref": "qwen3-max"}
+    }
+  ],
+  "synthesizer": {"ref": "qwen3-max"}
+}
+```
+
+当 `nested_worker_depth = 3` 时，会在上一结构基础上再嵌套一层（每个 Worker 被复制 4 次），等价结构如下：
+
+```json
+{
+  "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+  "workers": [
+    {
+      "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+      "workers": [
+        {
+          "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+          "workers": [
+            {"name": "kimi-k2-0905"},
+            {"name": "kimi-k2-0905"}
+          ],
+          "synthesizer": {"ref": "qwen3-max"}
+        },
+        {
+          "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+          "workers": [
+            {"name": "kimi-k2-0905"},
+            {"name": "kimi-k2-0905"}
+          ],
+          "synthesizer": {"ref": "qwen3-max"}
+        }
+      ],
+      "synthesizer": {"ref": "qwen3-max"}
+    },
+    {
+      "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+      "workers": [
+        {
+          "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+          "workers": [
+            {"name": "qwen3-coder", "temperature": 0.6},
+            {"name": "qwen3-coder", "temperature": 0.6}
+          ],
+          "synthesizer": {"ref": "qwen3-max"}
+        },
+        {
+          "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+          "workers": [
+            {"name": "qwen3-coder", "temperature": 0.6},
+            {"name": "qwen3-coder", "temperature": 0.6}
+          ],
+          "synthesizer": {"ref": "qwen3-max"}
+        }
+      ],
+      "synthesizer": {"ref": "qwen3-max"}
+    }
+  ],
+  "synthesizer": {"ref": "qwen3-max"}
+}
+```
+
+依此类推，可以通过调高 `nested_worker_depth` 快速获得更多冗余的 Worker 执行次数，而无需手写庞大的嵌套 JSON。
 
 ### 超时与域名覆盖
 
@@ -307,7 +426,7 @@ Chorus 同时实现了一组与 OpenAI API 保持兼容的端点：
 | --- | --- |
 | `POST /v1/chat/completions` | 等同于 `/api/chat`，支持流式增量输出。 |
 | `POST /v1/completions` | 等同于 `/api/generate`，支持字符串或字符串数组 prompt。 |
-| `POST /v1/responses` | 兼容 OpenAI Responses API（目前以非流式方式返回）。 |
+| `POST /v1/responses` | 兼容 OpenAI Responses API，支持标准 SSE 流式输出（`response.created` → `response.output_text.delta` → `response.completed` → `[DONE]`），也可非流式返回。 |
 | `GET /v1/models` | 返回符合 OpenAI 规范的模型列表。 |
 
 #### Cherry Studio 快速配置
@@ -372,6 +491,7 @@ RUST_LOG=debug cargo run
 | API Key 无效 | `LLM API request failed with status 401` | 检查 `api_key` 是否正确、是否具备访问权限。 |
 | 请求超时 | `request timeout` | 增加 `workflow.timeouts` 或域名覆盖，确认网络状况。 |
 | 端口冲突 | `Address already in use` | 修改配置端口或释放 11435 端口。 |
+| 模型未在配置中定义 | `Workflow configuration references undefined model(s): deepseek-v3.2`、`Model 'xxx' not found in configuration. Did you define it under [[model]]?` 或 `Worker lookup failed worker=xxx` | 确认 workflow 中引用的所有模型名称（analyzer / workers / synthesizer）在 `[[model]]` 段都有一致的 `name` 字段；若缺少则新增对应模型配置，修改后重启服务。 |
 | 所有工作节点失败 | `All worker models failed` | 核对网络、配额或模型状态，并查看 `RUST_LOG=debug` 日志。 |
 
 ## 安全建议

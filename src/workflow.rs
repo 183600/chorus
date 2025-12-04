@@ -517,11 +517,10 @@ Temperature越低（接近0），输出越确定和保守；temperature越高（
 
         let temperature = parse_temperature_from_response(&response);
         tracing::debug!(
-            "Analyzer {} produced temperature {} (depth {}), response: {}",
+            "Analyzer {} produced temperature {} (depth {})",
             target.model,
             temperature,
-            depth,
-            response
+            depth
         );
 
         Ok(temperature)

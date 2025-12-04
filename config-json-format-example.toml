@@ -25,11 +25,6 @@ name = "glm-4.6"
 [[model]]
 api_base = "https://apis.iflow.cn/v1"
 api_key = "your-api-key-here"
-name = "deepseek-v3.2"
-
-[[model]]
-api_base = "https://apis.iflow.cn/v1"
-api_key = "your-api-key-here"
 name = "deepseek-v3.1"
 
 [[model]]
@@ -42,9 +37,16 @@ api_base = "https://api.tbox.cn/api/llm/v1"
 api_key = "your-api-key-here"
 name = "ring-1t"
 
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "your-api-key-here"
+name = "qwen3-coder"
+
 # 工作流集成配置 - 使用 JSON 格式
 # 这是推荐的配置格式，支持嵌套工作流和详细的参数配置
 [workflow-integration]
+# 嵌套工作流层级（可选），默认 1
+nested_worker_depth = 1
 json = """
 {
   "analyzer": {
@@ -53,7 +55,7 @@ json = """
   },
   "workers": [
     {
-      "name": "deepseek-v3.2",
+      "name": "deepseek-v3.1",
       "temperature": 1
     },
     {
@@ -67,7 +69,7 @@ json = """
           "temperature": 1
         },
         {
-          "name": "deepseek-v3.2",
+          "name": "deepseek-v3.1",
           "temperature": 1
         },
         {

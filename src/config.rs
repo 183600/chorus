@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::de::Error as DeError;
 use serde::{de::Deserializer, Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -37,11 +37,6 @@ name = "glm-4.6"
 [[model]]
 api_base = "https://apis.iflow.cn/v1"
 api_key = "your-api-key-here"
-name = "deepseek-v3.2"
-
-[[model]]
-api_base = "https://apis.iflow.cn/v1"
-api_key = "your-api-key-here"
 name = "deepseek-v3.1"
 
 [[model]]
@@ -60,6 +55,8 @@ api_key = "your-api-key-here"
 name = "ring-1t"
 
 [workflow-integration]
+# 嵌套工作流层级，1 表示 Worker 不做额外复制
+nested_worker_depth = 1
 json = """{
   "analyzer": {
     "ref": "glm-4.6",
@@ -67,7 +64,7 @@ json = """{
   },
   "workers": [
     {
-      "name": "deepseek-v3.2",
+      "name": "deepseek-v3.1",
       "temperature": 1
     },
     {
@@ -81,7 +78,7 @@ json = """{
           "temperature": 1
         },
         {
-          "name": "deepseek-v3.2",
+          "name": "deepseek-v3.1",
           "temperature": 1
         },
         {
@@ -196,6 +193,32 @@ impl WorkflowPlan {
 
     pub fn worker_labels(&self) -> Vec<String> {
         self.workers.iter().map(WorkflowWorker::label).collect()
+    }
+
+    pub fn referenced_models(&self) -> HashSet<String> {
+        let mut refs = HashSet::new();
+        self.collect_model_references(&mut refs);
+        refs
+    }
+
+    fn collect_model_references(&self, refs: &mut HashSet<String>) {
+        refs.insert(self.analyzer.model.clone());
+        if let Some(synthesizer) = &self.synthesizer {
+            refs.insert(synthesizer.model.clone());
+        }
+        if let Some(selector) = &self.selector {
+            refs.insert(selector.model.clone());
+        }
+        for worker in &self.workers {
+            match worker {
+                WorkflowWorker::Model(target) => {
+                    refs.insert(target.model.clone());
+                }
+                WorkflowWorker::Workflow(plan) => {
+                    plan.collect_model_references(refs);
+                }
+            }
+        }
     }
 
     pub fn to_json_string(&self) -> Result<String> {
@@ -332,6 +355,80 @@ impl WorkflowPlan {
         }
 
         current
+    }
+
+    pub fn apply_nested_worker_depth(&mut self, depth: usize) -> Result<()> {
+        if depth == 0 {
+            return Err(anyhow!(
+                "`nested_worker_depth` must be at least 1; got {}",
+                depth
+            ));
+        }
+
+        for worker in self.workers.iter_mut() {
+            if let WorkflowWorker::Workflow(plan) = worker {
+                plan.apply_nested_worker_depth(depth)?;
+            }
+        }
+
+        if depth == 1 || self.workers.is_empty() {
+            return Ok(());
+        }
+
+        if self.synthesizer.is_none() && self.selector.is_none() {
+            return Err(anyhow!(
+                "Workflow plan {} must configure a `synthesizer` or `selector` before enabling `nested_worker_depth`",
+                self.label()
+            ));
+        }
+
+        let analyzer = self.analyzer.clone();
+        let synthesizer = self.synthesizer.clone();
+        let selector = self.selector.clone();
+
+        let mut expanded_workers = Vec::with_capacity(self.workers.len());
+        for worker in self.workers.iter() {
+            expanded_workers.push(Self::replicate_worker(
+                worker.clone(),
+                depth - 1,
+                &analyzer,
+                synthesizer.as_ref(),
+                selector.as_ref(),
+            ));
+        }
+
+        self.workers = expanded_workers;
+        Ok(())
+    }
+
+    fn replicate_worker(
+        worker: WorkflowWorker,
+        extra_levels: usize,
+        analyzer: &WorkflowModelTarget,
+        synthesizer: Option<&WorkflowModelTarget>,
+        selector: Option<&WorkflowModelTarget>,
+    ) -> WorkflowWorker {
+        if extra_levels == 0 {
+            return worker;
+        }
+
+        let nested_plan = WorkflowPlan {
+            analyzer: analyzer.clone(),
+            workers: vec![
+                Self::replicate_worker(
+                    worker.clone(),
+                    extra_levels - 1,
+                    analyzer,
+                    synthesizer,
+                    selector,
+                ),
+                Self::replicate_worker(worker, extra_levels - 1, analyzer, synthesizer, selector),
+            ],
+            synthesizer: synthesizer.cloned(),
+            selector: selector.cloned(),
+        };
+
+        WorkflowWorker::Workflow(Box::new(nested_plan))
     }
 
     fn is_nested_workflow(value: &JsonValue) -> bool {
@@ -554,6 +651,8 @@ where
     #[derive(Deserialize)]
     struct JsonWrapper {
         json: String,
+        #[serde(default)]
+        nested_worker_depth: Option<usize>,
     }
 
     #[derive(Deserialize)]
@@ -565,8 +664,22 @@ where
     }
 
     match PlanInput::deserialize(deserializer)? {
-        PlanInput::Json(wrapper) => WorkflowPlan::from_json_str(&wrapper.json)
-            .map_err(|err| DeError::custom(format!("Failed to parse workflow json: {}", err))),
+        PlanInput::Json(wrapper) => {
+            let mut plan = WorkflowPlan::from_json_str(&wrapper.json).map_err(|err| {
+                DeError::custom(format!("Failed to parse workflow json: {}", err))
+            })?;
+            let depth = wrapper.nested_worker_depth.unwrap_or(1);
+            plan.apply_nested_worker_depth(depth).map_err(|err| {
+                DeError::custom(format!("Failed to apply nested_worker_depth: {}", err))
+            })?;
+            if depth > 1 {
+                plan.validate_structure().map_err(|err| {
+                    DeError::custom(format!("Failed to parse workflow json: {}", err))
+                })?;
+                plan.inherit_missing_synthesizers();
+            }
+            Ok(plan)
+        }
         PlanInput::PlainString(json) => WorkflowPlan::from_json_str(&json)
             .map_err(|err| DeError::custom(format!("Failed to parse workflow json: {}", err))),
         PlanInput::Plan(mut plan) => {
@@ -601,6 +714,8 @@ impl Config {
             .with_context(|| format!("Failed to read config file: {}", path))?;
         let cfg: Config = toml::from_str(&content)
             .with_context(|| format!("Failed to parse TOML from {}", path))?;
+        cfg.validate_model_references()
+            .with_context(|| "Workflow configuration references undefined models")?;
         Ok(cfg)
     }
 
@@ -825,6 +940,28 @@ impl Config {
             .cloned()
             .map(|m| (m.name.clone(), m))
             .collect()
+    }
+
+    pub fn validate_model_references(&self) -> Result<()> {
+        let defined: HashSet<&str> = self.models.iter().map(|m| m.name.as_str()).collect();
+        let mut missing: Vec<String> = self
+            .workflow_integration
+            .referenced_models()
+            .into_iter()
+            .filter(|name| !defined.contains(name.as_str()))
+            .collect();
+
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        missing.sort();
+        missing.dedup();
+
+        Err(anyhow!(
+            "Workflow configuration references undefined model(s): {}. Please add matching [[model]] entries for each missing name.",
+            missing.join(", ")
+        ))
     }
 
     pub fn effective_timeouts_for_domain(&self, domain: Option<&str>) -> TimeoutConfig {
