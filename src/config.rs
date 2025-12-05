@@ -60,6 +60,8 @@ api_key = "your-api-key-here"
 name = "ring-1t"
 
 [workflow-integration]
+nested_worker_depth = 1
+
 json = """{
   "analyzer": {
     "ref": "glm-4.6",
@@ -181,6 +183,8 @@ pub struct WorkflowPlan {
     pub synthesizer: Option<WorkflowModelTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<WorkflowModelTarget>,
+    #[serde(default)]
+    pub nested_worker_depth: Option<u32>,
 }
 
 impl WorkflowPlan {
@@ -306,6 +310,59 @@ impl WorkflowPlan {
 
     pub fn inherit_missing_synthesizers(&mut self) {
         self.apply_synthesizer_inheritance(None);
+    }
+
+    pub fn apply_worker_replication(&mut self) {
+        if let Some(depth) = self.nested_worker_depth {
+            if depth > 1 {
+                let analyzer = self.analyzer.clone();
+                let synthesizer = self.synthesizer.clone();
+                let selector = self.selector.clone();
+
+                let mut new_workers = Vec::new();
+                for worker in self.workers.drain(..) {
+                    let replicated = Self::replicate_worker_static(
+                        worker,
+                        depth,
+                        &analyzer,
+                        &synthesizer,
+                        &selector,
+                    );
+                    new_workers.push(replicated);
+                }
+                self.workers = new_workers;
+            }
+        }
+    }
+
+    fn replicate_worker_static(
+        worker: WorkflowWorker,
+        depth: u32,
+        analyzer: &WorkflowModelTarget,
+        synthesizer: &Option<WorkflowModelTarget>,
+        selector: &Option<WorkflowModelTarget>,
+    ) -> WorkflowWorker {
+        match worker {
+            WorkflowWorker::Model(model_target) => {
+                if depth == 1 {
+                    WorkflowWorker::Model(model_target)
+                } else {
+                    let mut nested_plan = WorkflowPlan {
+                        analyzer: analyzer.clone(),
+                        workers: vec![
+                            WorkflowWorker::Model(model_target.clone()),
+                            WorkflowWorker::Model(model_target),
+                        ],
+                        synthesizer: synthesizer.clone(),
+                        selector: selector.clone(),
+                        nested_worker_depth: Some(depth - 1),
+                    };
+                    nested_plan.apply_worker_replication();
+                    WorkflowWorker::Workflow(Box::new(nested_plan))
+                }
+            }
+            WorkflowWorker::Workflow(_) => worker,
+        }
     }
 
     fn apply_synthesizer_inheritance(
@@ -554,6 +611,8 @@ where
     #[derive(Deserialize)]
     struct JsonWrapper {
         json: String,
+        #[serde(default)]
+        nested_worker_depth: Option<u32>,
     }
 
     #[derive(Deserialize)]
@@ -565,8 +624,14 @@ where
     }
 
     match PlanInput::deserialize(deserializer)? {
-        PlanInput::Json(wrapper) => WorkflowPlan::from_json_str(&wrapper.json)
-            .map_err(|err| DeError::custom(format!("Failed to parse workflow json: {}", err))),
+        PlanInput::Json(wrapper) => {
+            let mut plan = WorkflowPlan::from_json_str(&wrapper.json).map_err(|err| {
+                DeError::custom(format!("Failed to parse workflow json: {}", err))
+            })?;
+            plan.nested_worker_depth = wrapper.nested_worker_depth;
+            plan.apply_worker_replication();
+            Ok(plan)
+        }
         PlanInput::PlainString(json) => WorkflowPlan::from_json_str(&json)
             .map_err(|err| DeError::custom(format!("Failed to parse workflow json: {}", err))),
         PlanInput::Plan(mut plan) => {
@@ -574,6 +639,7 @@ where
                 DeError::custom(format!("Failed to parse workflow json: {}", err))
             })?;
             plan.inherit_missing_synthesizers();
+            plan.apply_worker_replication();
             Ok(plan)
         }
     }
@@ -711,6 +777,7 @@ impl Config {
                             auto_temperature: None,
                         }),
                         selector: None,
+                        nested_worker_depth: None,
                     },
                     workflow: legacy.workflow,
                 },

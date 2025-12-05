@@ -1455,6 +1455,7 @@ mod tests {
                     auto_temperature: None,
                 }),
                 selector: None,
+                nested_worker_depth: None,
             },
             workflow: WorkflowConfig {
                 timeouts: TimeoutConfig {

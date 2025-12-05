@@ -1023,4 +1023,176 @@ synthesizer_timeout_secs = 60
         let _ = fs::remove_dir_all(&temp_dir);
         drop(home_guard);
     }
+
+    #[test]
+    fn test_worker_replication_mode_1() {
+        let cfg_str = r#"
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+api_base = "https://api.example.com/v1"
+api_key = "k"
+name = "m1"
+
+[workflow-integration]
+nested_worker_depth = 1
+json = """{
+  "analyzer": {
+    "ref": "m1"
+  },
+  "workers": [
+    {
+      "name": "m1"
+    },
+    {
+      "name": "m1"
+    }
+  ],
+  "synthesizer": {
+    "ref": "m1"
+  }
+}"""
+
+[workflow.timeouts]
+analyzer_timeout_secs = 30
+worker_timeout_secs = 60
+synthesizer_timeout_secs = 90
+"#;
+
+        let cfg: Config = toml::from_str(cfg_str).unwrap();
+        assert_eq!(cfg.workflow_integration.nested_worker_depth, Some(1));
+        assert_eq!(cfg.workflow_integration.workers.len(), 2);
+
+        for worker in &cfg.workflow_integration.workers {
+            match worker {
+                WorkflowWorker::Model(target) => {
+                    assert_eq!(target.model, "m1");
+                }
+                _ => panic!("Expected model worker"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_worker_replication_mode_2() {
+        let cfg_str = r#"
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+api_base = "https://api.example.com/v1"
+api_key = "k"
+name = "m1"
+
+[workflow-integration]
+nested_worker_depth = 2
+json = """{
+  "analyzer": {
+    "ref": "m1"
+  },
+  "workers": [
+    {
+      "name": "m1"
+    },
+    {
+      "name": "m1"
+    }
+  ],
+  "synthesizer": {
+    "ref": "m1"
+  }
+}"""
+
+[workflow.timeouts]
+analyzer_timeout_secs = 30
+worker_timeout_secs = 60
+synthesizer_timeout_secs = 90
+"#;
+
+        let cfg: Config = toml::from_str(cfg_str).unwrap();
+        assert_eq!(cfg.workflow_integration.nested_worker_depth, Some(2));
+        assert_eq!(cfg.workflow_integration.workers.len(), 2);
+
+        for worker in &cfg.workflow_integration.workers {
+            match worker {
+                WorkflowWorker::Workflow(plan) => {
+                    assert_eq!(plan.workers.len(), 2);
+                    for nested_worker in &plan.workers {
+                        match nested_worker {
+                            WorkflowWorker::Model(target) => {
+                                assert_eq!(target.model, "m1");
+                            }
+                            _ => panic!("Expected model worker in nested workflow"),
+                        }
+                    }
+                }
+                _ => panic!("Expected nested workflow"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_worker_replication_mode_3() {
+        let cfg_str = r#"
+[server]
+host = "127.0.0.1"
+port = 11435
+
+[[model]]
+api_base = "https://api.example.com/v1"
+api_key = "k"
+name = "m1"
+
+[workflow-integration]
+nested_worker_depth = 3
+json = """{
+  "analyzer": {
+    "ref": "m1"
+  },
+  "workers": [
+    {
+      "name": "m1"
+    }
+  ],
+  "synthesizer": {
+    "ref": "m1"
+  }
+}"""
+
+[workflow.timeouts]
+analyzer_timeout_secs = 30
+worker_timeout_secs = 60
+synthesizer_timeout_secs = 90
+"#;
+
+        let cfg: Config = toml::from_str(cfg_str).unwrap();
+        assert_eq!(cfg.workflow_integration.nested_worker_depth, Some(3));
+        assert_eq!(cfg.workflow_integration.workers.len(), 1);
+
+        match &cfg.workflow_integration.workers[0] {
+            WorkflowWorker::Workflow(plan) => {
+                assert_eq!(plan.workers.len(), 2);
+                for worker in &plan.workers {
+                    match worker {
+                        WorkflowWorker::Workflow(nested_plan) => {
+                            assert_eq!(nested_plan.workers.len(), 2);
+                            for nested_worker in &nested_plan.workers {
+                                match nested_worker {
+                                    WorkflowWorker::Model(target) => {
+                                        assert_eq!(target.model, "m1");
+                                    }
+                                    _ => panic!("Expected model worker"),
+                                }
+                            }
+                        }
+                        _ => panic!("Expected nested workflow at level 2"),
+                    }
+                }
+            }
+            _ => panic!("Expected nested workflow at level 1"),
+        }
+    }
 }
