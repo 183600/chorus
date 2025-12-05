@@ -248,6 +248,150 @@ synthesizer_timeout_secs = 30
 - 先应用全局超时，再按域名覆盖缺省字段。
 - 域名读取自模型 `api_base` 的主机名，支持部分字段覆盖。
 
+### Worker Replication Mode（工作节点复制模式）
+
+`nested_worker_depth` 参数控制工作节点如何被转换和嵌套。此参数可帮助创建更复杂的工作流策略，如通过多层复制实现冗余或多角度分析。
+
+#### 配置方式
+
+```toml
+[workflow-integration]
+nested_worker_depth = 1
+
+json = """{
+  "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+  "workers": [
+    {"name": "kimi-k2-0905"},
+    {"name": "qwen3-coder", "temperature": 0.6}
+  ],
+  "synthesizer": {"ref": "qwen3-max"}
+}"""
+```
+
+#### 行为说明
+
+**模式 1（默认）：无转换**
+
+```
+nested_worker_depth = 1
+```
+
+工作流保持原样不变：
+```json
+{
+  "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+  "workers": [
+    {"name": "kimi-k2-0905"},
+    {"name": "qwen3-coder", "temperature": 0.6}
+  ],
+  "synthesizer": {"ref": "qwen3-max"}
+}
+```
+
+**模式 2：第一级嵌套与复制**
+
+```
+nested_worker_depth = 2
+```
+
+每个工作节点被转换为一个嵌套工作流，其中该节点被复制两次：
+```json
+{
+  "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+  "workers": [
+    {
+      "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+      "workers": [
+        {"name": "kimi-k2-0905"},
+        {"name": "kimi-k2-0905"}
+      ],
+      "synthesizer": {"ref": "qwen3-max"}
+    },
+    {
+      "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+      "workers": [
+        {"name": "qwen3-coder", "temperature": 0.6},
+        {"name": "qwen3-coder", "temperature": 0.6}
+      ],
+      "synthesizer": {"ref": "qwen3-max"}
+    }
+  ],
+  "synthesizer": {"ref": "qwen3-max"}
+}
+```
+
+**模式 3：第二级嵌套与复制**
+
+```
+nested_worker_depth = 3
+```
+
+在模式 2 的基础上，进行再次嵌套与复制，形成三层结构。每个嵌套层级的节点都被复制：
+```json
+{
+  "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+  "workers": [
+    {
+      "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+      "workers": [
+        {
+          "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+          "workers": [
+            {"name": "kimi-k2-0905"},
+            {"name": "kimi-k2-0905"}
+          ],
+          "synthesizer": {"ref": "qwen3-max"}
+        },
+        {
+          "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+          "workers": [
+            {"name": "kimi-k2-0905"},
+            {"name": "kimi-k2-0905"}
+          ],
+          "synthesizer": {"ref": "qwen3-max"}
+        }
+      ],
+      "synthesizer": {"ref": "qwen3-max"}
+    },
+    {
+      "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+      "workers": [
+        {
+          "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+          "workers": [
+            {"name": "qwen3-coder", "temperature": 0.6},
+            {"name": "qwen3-coder", "temperature": 0.6}
+          ],
+          "synthesizer": {"ref": "qwen3-max"}
+        },
+        {
+          "analyzer": {"ref": "glm-4.6", "auto_temperature": true},
+          "workers": [
+            {"name": "qwen3-coder", "temperature": 0.6},
+            {"name": "qwen3-coder", "temperature": 0.6}
+          ],
+          "synthesizer": {"ref": "qwen3-max"}
+        }
+      ],
+      "synthesizer": {"ref": "qwen3-max"}
+    }
+  ],
+  "synthesizer": {"ref": "qwen3-max"}
+}
+```
+
+#### 用途场景
+
+- **模式 1**：标准工作流，适合大多数场景。
+- **模式 2+**：通过多层复制和嵌套创建冗余架构，提升单个模型的可靠性或从多个角度分析问题。
+
+#### 参数规则
+
+- 默认值为 `1`（无转换）
+- 仅支持正整数
+- 不会影响已经是嵌套工作流的节点（仅对直接的模型节点生效）
+- 每增加一层深度，计算成本和延迟会指数增长，建议不要设置过大的值
+
 > 升级提醒：检测到旧版 workflow 配置时，Chorus 会自动迁移为 `[workflow-integration].json` 格式，并在同目录生成 `config.toml.bak` 备份文件。
 
 ## API 使用

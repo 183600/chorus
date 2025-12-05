@@ -45,6 +45,11 @@ name = "ring-1t"
 # 工作流集成配置 - 使用 JSON 格式
 # 这是推荐的配置格式，支持嵌套工作流和详细的参数配置
 [workflow-integration]
+# nested_worker_depth: 控制工作节点的嵌套和复制行为
+# 可选，默认值为 1（不进行转换）
+# 详见 README.md 中的 "Worker Replication Mode" 部分
+# nested_worker_depth = 1
+
 json = """
 {
   "analyzer": {

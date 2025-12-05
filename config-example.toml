@@ -36,6 +36,13 @@ auto_temperature = true
 
 # 新格式：将 workflow 结构存储为 JSON 字符串
 [workflow-integration]
+# 可选参数: nested_worker_depth (默认: 1)
+# 该参数控制工作节点的嵌套和复制行为
+# - 1: 不进行任何转换（默认行为）
+# - 2+: 每个工作节点被转换为嵌套工作流，该工作流内的节点被复制 (depth-1) 次
+# 详见 README.md 中的 "Worker Replication Mode" 部分
+nested_worker_depth = 1
+
 json = """{
   "analyzer": {
     "ref": "glm-4.6",
