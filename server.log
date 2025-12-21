@@ -1,0 +1,38 @@
+[2m2025-12-21T11:36:09.129962Z[0m [32m INFO[0m [2mchorus[0m[2m:[0m Starting Chorus server on 127.0.0.1:11435
+[2m2025-12-21T11:36:09.130118Z[0m [32m INFO[0m [2mchorus[0m[2m:[0m Analyzer model: glm-4.6
+[2m2025-12-21T11:36:09.130120Z[0m [32m INFO[0m [2mchorus[0m[2m:[0m Worker nodes: ["glm-4.6"]
+[2m2025-12-21T11:36:09.130123Z[0m [32m INFO[0m [2mchorus[0m[2m:[0m Synthesizer model: glm-4.6
+[2m2025-12-21T11:36:09.130342Z[0m [32m INFO[0m [2mchorus::server[0m[2m:[0m Chorus server listening on http://127.0.0.1:11435
+[2m2025-12-21T11:36:10.126624Z[0m [32m INFO[0m [2mchorus::server[0m[2m:[0m Received generate request, stream: Some(false), include_workflow: None
+[2m2025-12-21T11:36:10.126768Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Starting workflow processing with details
+[2m2025-12-21T11:36:10.126868Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Analyzer auto temperature disabled, using default: 1.4
+[2m2025-12-21T11:36:10.126876Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Step 1 completed - Temperature: 1.4
+[2m2025-12-21T11:36:10.126882Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Calling worker model: glm-4.6
+[2m2025-12-21T11:36:11.544450Z[0m [33m WARN[0m [2mchorus::workflow[0m[2m:[0m Worker call failed [3mworker[0m[2m=[0mglm-4.6 [3mdepth[0m[2m=[0m0 [3merror[0m[2m=[0mLLM provider https://apis.iflow.cn/v1 (model glm-4.6) returned error: status 434: Invalid apiKey，get your apiKey: https://iflow.cn/
+[2m2025-12-21T11:36:11.544484Z[0m [31mERROR[0m [2mchorus::server[0m[2m:[0m Application error [3mstatus[0m[2m=[0m500 Internal Server Error [3merror[0m[2m=[0mAll worker nodes failed at depth 0 for plan workflow:glm-4.6. Worker errors: glm-4.6: LLM provider https://apis.iflow.cn/v1 (model glm-4.6) returned error: status 434: Invalid apiKey，get your apiKey: https://iflow.cn/
+[2m2025-12-21T11:36:28.987115Z[0m [32m INFO[0m [2mchorus::server[0m[2m:[0m Received chat request with 1 messages, stream: Some(false), include_workflow: None
+[2m2025-12-21T11:36:28.987281Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Starting workflow processing with details
+[2m2025-12-21T11:36:28.987289Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Analyzer auto temperature disabled, using default: 1.4
+[2m2025-12-21T11:36:28.987297Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Step 1 completed - Temperature: 1.4
+[2m2025-12-21T11:36:28.987303Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Calling worker model: glm-4.6
+[2m2025-12-21T11:36:29.507114Z[0m [33m WARN[0m [2mchorus::workflow[0m[2m:[0m Worker call failed [3mworker[0m[2m=[0mglm-4.6 [3mdepth[0m[2m=[0m0 [3merror[0m[2m=[0mLLM provider https://apis.iflow.cn/v1 (model glm-4.6) returned error: status 434: Invalid apiKey，get your apiKey: https://iflow.cn/
+[2m2025-12-21T11:36:29.507149Z[0m [31mERROR[0m [2mchorus::server[0m[2m:[0m Application error [3mstatus[0m[2m=[0m500 Internal Server Error [3merror[0m[2m=[0mAll worker nodes failed at depth 0 for plan workflow:glm-4.6. Worker errors: glm-4.6: LLM provider https://apis.iflow.cn/v1 (model glm-4.6) returned error: status 434: Invalid apiKey，get your apiKey: https://iflow.cn/
+[2m2025-12-21T11:36:29.538015Z[0m [32m INFO[0m [2mchorus::server[0m[2m:[0m Received chat request with 1 messages, stream: Some(true), include_workflow: None
+[2m2025-12-21T11:36:29.538224Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Starting workflow processing with details
+[2m2025-12-21T11:36:29.538232Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Analyzer auto temperature disabled, using default: 1.4
+[2m2025-12-21T11:36:29.538237Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Step 1 completed - Temperature: 1.4
+[2m2025-12-21T11:36:29.538242Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Calling worker model: glm-4.6
+[2m2025-12-21T11:36:30.026752Z[0m [33m WARN[0m [2mchorus::workflow[0m[2m:[0m Worker call failed [3mworker[0m[2m=[0mglm-4.6 [3mdepth[0m[2m=[0m0 [3merror[0m[2m=[0mLLM provider https://apis.iflow.cn/v1 (model glm-4.6) returned error: status 434: Invalid apiKey，get your apiKey: https://iflow.cn/
+[2m2025-12-21T11:36:30.061261Z[0m [32m INFO[0m [2mchorus::server[0m[2m:[0m Received generate request, stream: Some(false), include_workflow: None
+[2m2025-12-21T11:36:30.061284Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Starting workflow processing with details
+[2m2025-12-21T11:36:30.061290Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Analyzer auto temperature disabled, using default: 1.4
+[2m2025-12-21T11:36:30.061296Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Step 1 completed - Temperature: 1.4
+[2m2025-12-21T11:36:30.061303Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Calling worker model: glm-4.6
+[2m2025-12-21T11:36:30.552330Z[0m [33m WARN[0m [2mchorus::workflow[0m[2m:[0m Worker call failed [3mworker[0m[2m=[0mglm-4.6 [3mdepth[0m[2m=[0m0 [3merror[0m[2m=[0mLLM provider https://apis.iflow.cn/v1 (model glm-4.6) returned error: status 434: Invalid apiKey，get your apiKey: https://iflow.cn/
+[2m2025-12-21T11:36:30.552361Z[0m [31mERROR[0m [2mchorus::server[0m[2m:[0m Application error [3mstatus[0m[2m=[0m500 Internal Server Error [3merror[0m[2m=[0mAll worker nodes failed at depth 0 for plan workflow:glm-4.6. Worker errors: glm-4.6: LLM provider https://apis.iflow.cn/v1 (model glm-4.6) returned error: status 434: Invalid apiKey，get your apiKey: https://iflow.cn/
+[2m2025-12-21T11:36:30.586582Z[0m [32m INFO[0m [2mchorus::server[0m[2m:[0m Received generate request, stream: Some(true), include_workflow: None
+[2m2025-12-21T11:36:30.586643Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Starting workflow processing with details
+[2m2025-12-21T11:36:30.586650Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Analyzer auto temperature disabled, using default: 1.4
+[2m2025-12-21T11:36:30.586655Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Step 1 completed - Temperature: 1.4
+[2m2025-12-21T11:36:30.586660Z[0m [32m INFO[0m [2mchorus::workflow[0m[2m:[0m Calling worker model: glm-4.6
+[2m2025-12-21T11:36:31.072008Z[0m [33m WARN[0m [2mchorus::workflow[0m[2m:[0m Worker call failed [3mworker[0m[2m=[0mglm-4.6 [3mdepth[0m[2m=[0m0 [3merror[0m[2m=[0mLLM provider https://apis.iflow.cn/v1 (model glm-4.6) returned error: status 434: Invalid apiKey，get your apiKey: https://iflow.cn/
