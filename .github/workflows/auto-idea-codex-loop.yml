@@ -179,14 +179,14 @@ $IDEA
           git remote set-url origin "https://x-access-token:${GH_PAT}@github.com/${GITHUB_REPOSITORY}.git"
           git push -u origin "$BRANCH"
 
-      # ========= 回到 master：记录 JSON、比较并裁剪、写 marker、push =========
-      - name: Switch back to master
+      # ========= 回到 main：记录 JSON、比较并裁剪、写 marker、push =========
+      - name: Switch back to main
         run: |
-          git fetch origin master
-          git checkout master
-          git pull origin master
+          git fetch origin main
+          git checkout main
+          git pull origin main
 
-      - name: Append result to results/ideas.json on master
+      - name: Append result to results/ideas.json on main
         run: |
           BRANCH="${{ steps.bn.outputs.branch_name }}"
           SHA="$(cat "${RUNNER_TEMP}/branch_sha.txt" 2>/dev/null || true)"
@@ -211,7 +211,7 @@ $IDEA
           }
           EOF
 
-      - name: Commit and push master
+      - name: Commit and push main
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
@@ -219,4 +219,4 @@ $IDEA
           git commit -m "chore: record idea result (${{ steps.bn.outputs.branch_name }})" || true
 
           git remote set-url origin "https://x-access-token:${GH_PAT}@github.com/${GITHUB_REPOSITORY}.git"
-          git push origin master
+          git push origin main
