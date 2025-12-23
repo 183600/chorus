@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-run_cycle.py
-修复并整理自用户提供脚本：主要修复 f-string 中包含反斜线的问题，
-并对整体脚本做语法与健壮性改进。
-"""
 
 import os
 import json
