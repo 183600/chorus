@@ -3,7 +3,17 @@ name: auto-idea-codex-loop
 on:
   push:
     branches: ["master"]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      description:
+        description: 'Manual trigger for the auto idea codex loop workflow'
+        required: false
+        default: 'Manual run'
+      debug:
+        description: 'Enable debug mode'
+        required: false
+        default: 'false'
+        type: boolean
 
 concurrency:
   group: auto-idea-codex-loop
