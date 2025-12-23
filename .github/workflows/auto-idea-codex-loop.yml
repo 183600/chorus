@@ -28,40 +28,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ========= 只运行一次的脚本：marker 检测 =========
-      - name: Check one-time watchdog marker
-        id: once
-        run: |
-          mkdir -p results/once
-          if [ -f results/once/typus_watchdog_done.json ]; then
-            echo "run_watchdog=0" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_watchdog=1" >> "$GITHUB_OUTPUT"
-          fi
-
-      # 如果你的项目确实是 cabal/ghc，这一步建议打开（只在第一次运行）
-      - name: Setup Haskell (only for one-time watchdog)
-        if: steps.once.outputs.run_watchdog == '1'
-        uses: haskell-actions/setup@v2
-        with:
-          ghc-version: "9.6.6"
-          cabal-version: "3.10.3.0"
-
-      - name: One-time typus watchdog (run only once ever)
-        if: steps.once.outputs.run_watchdog == '1'
-        env:
-          IFLOW_API_KEY: ${{ secrets.IFLOW_API_KEY }}
-          WATCHDOG_TIMEOUT: "900"
-          CHECK_INTERVAL: "30"
-          MAX_ITERS: "20"
-          EXIT_AFTER_PASS: "1"
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          chmod +x scripts/typus_watchdog.sh
-          ./scripts/typus_watchdog.sh || true
-
       # ========= 生成 idea（拆成多次调用） =========
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -184,7 +150,7 @@ jobs:
           git remote set-url origin "https://x-access-token:${GH_PAT}@github.com/${GITHUB_REPOSITORY}.git"
           git push -u origin "$BRANCH"
 
-      # ========= 回到 main：记录 JSON、比较并裁剪、写 marker、push =========
+      # ========= 回到 main：记录 JSON、比较并裁剪 =========
       - name: Switch back to main and restore original files
         run: |
           git checkout main
@@ -203,21 +169,11 @@ jobs:
         run: |
           python scripts/judge_and_prune.py results/ideas.json
 
-      - name: Write one-time marker
-        if: steps.once.outputs.run_watchdog == '1'
-        run: |
-          mkdir -p results/once
-          # 使用 printf 避免 Here Doc 缩进问题
-          printf '{"ran":true,"ts_utc":"%s","run_id":"%s"}\n' \
-            "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-            "${GITHUB_RUN_ID}" \
-            > results/once/typus_watchdog_done.json
-
       - name: Commit and push main
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          git add results/ideas.json results/once/typus_watchdog_done.json 2>/dev/null || true
+          git add results/ideas.json
           git commit -m "chore: record idea result (${{ steps.bn.outputs.branch_name }})" || true
 
           git remote set-url origin "https://x-access-token:${GH_PAT}@github.com/${GITHUB_REPOSITORY}.git"
