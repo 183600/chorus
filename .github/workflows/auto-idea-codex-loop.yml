@@ -2,7 +2,7 @@ name: auto-idea-codex-loop
 
 on:
   push:
-  workflow_dispatch2:
+  workflow_dispatch_2:
 
 concurrency:
   group: auto-idea-codex-loop
