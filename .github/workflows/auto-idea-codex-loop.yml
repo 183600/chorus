@@ -10,6 +10,7 @@ concurrency:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   run-one-iteration:
@@ -30,6 +31,7 @@ jobs:
       - name: Check one-time watchdog marker
         id: once
         run: |
+          mkdir -p results/once
           if [ -f results/once/typus_watchdog_done.json ]; then
             echo "run_watchdog=0" >> "$GITHUB_OUTPUT"
           else
@@ -76,6 +78,13 @@ jobs:
           BN="idea-$(date -u +'%Y%m%d-%H%M%S')"
           echo "branch_name=$BN" >> "$GITHUB_OUTPUT"
 
+      - name: Ensure results directory exists
+        run: |
+          mkdir -p results
+          if [ ! -f results/ideas.json ]; then
+            echo '[]' > results/ideas.json
+          fi
+
       - name: Generate idea (multi-call)
         env:
           IFLOW_API_KEY: ${{ secrets.IFLOW_API_KEY }}
@@ -83,19 +92,13 @@ jobs:
           python scripts/generate_idea.py "${RUNNER_TEMP}/idea.txt"
 
       # ========= 创建分支、清空旧代码、用 codex 落地 =========
-      - name: Create branch and wipe repo files
+      - name: Create new branch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           BRANCH="${{ steps.bn.outputs.branch_name }}"
           git checkout -b "$BRANCH"
-
-          # 清空分支上的旧代码（只影响该分支）
-          git rm -r --ignore-unmatch .
-
-          # 提交“清空”状态（若没有变化则忽略）
-          git commit -m "chore: wipe repo for new idea" || true
 
       - name: Install Codex CLI
         run: |
@@ -122,7 +125,7 @@ jobs:
           cat > ~/.codex/config.toml <<TOML
           model = "glm-4.6"
           model_provider = "iflow"
-          preferred_auth_method = "${IFLOW_API_KEY}"
+          preferred_auth_method = "env"
 
           [model_providers.iflow]
           name = "iflow"
@@ -156,7 +159,7 @@ jobs:
           # Write the full prompt to a file (avoids YAML multi‑line quoting issues)
           PROMPT_FILE="${RUNNER_TEMP}/prompt.txt"
           cat > "$PROMPT_FILE" <<EOF
-你将把下面这个“提升 LLM 智力的全新 workflow 点子”落地为一个可运行的最小原型仓库。
+你将把下面这个"提升 LLM 智力的全新 workflow 点子"落地为一个可运行的最小原型仓库。
 
 要求：
 1) 生成 README.md：讲清楚 workflow 的目标、步骤、输入输出、如何运行
@@ -165,7 +168,7 @@ jobs:
 4) 不要泄露任何密钥，不要把 ~/.codex 或 auth/config 写入仓库
 
 点子如下（原样粘贴）：
-${IDEA}
+ ${IDEA}
 EOF
 
           # Feed the prompt to codex
@@ -185,9 +188,8 @@ EOF
           git push -u origin "$BRANCH"
 
       # ========= 回到 main：记录 JSON、比较并裁剪、写 marker、push =========
-      - name: Switch back to main
+      - name: Switch back to main and restore original files
         run: |
-          git fetch origin main
           git checkout main
           git pull origin main
 
