@@ -153,7 +153,9 @@ jobs:
           export OPENAI_API_KEY="$IFLOW_API_KEY"
           IDEA="$(cat "${RUNNER_TEMP}/idea.txt")"
 
-          codex --full-auto "
+          # Write the full prompt to a file (avoids YAML multi‑line quoting issues)
+          PROMPT_FILE="${RUNNER_TEMP}/prompt.txt"
+          cat > "$PROMPT_FILE" <<EOF
 你将把下面这个“提升 LLM 智力的全新 workflow 点子”落地为一个可运行的最小原型仓库。
 
 要求：
@@ -163,8 +165,11 @@ jobs:
 4) 不要泄露任何密钥，不要把 ~/.codex 或 auth/config 写入仓库
 
 点子如下（原样粘贴）：
-$IDEA
-" --dangerously-bypass-approvals-and-sandbox
+${IDEA}
+EOF
+
+          # Feed the prompt to codex
+          codex --full-auto "$(cat "$PROMPT_FILE")" --dangerously-bypass-approvals-and-sandbox
 
           git add -A
           git commit -m "feat: implement idea via codex" || true
