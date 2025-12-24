@@ -3,13 +3,14 @@ import json
 import os
 import sys
 import time
+import re  # 新增导入
 from typing import Any, Dict, Tuple
 
 import requests
 
 BASE_URL = os.getenv("IFLOW_BASE_URL", "https://apis.iflow.cn/v1").rstrip("/")
 MODEL = os.getenv("IFLOW_MODEL", "glm-4.6")
-API_KEY = os.getenv("IFLOW_API_KEY") or os.getenv("OPENAI_API_KEY")  # 兼容你 auth.json 的字段名
+API_KEY = os.getenv("IFLOW_API_KEY") or os.getenv("OPENAI_API_KEY")
 
 if not API_KEY:
     print("Missing IFLOW_API_KEY (or OPENAI_API_KEY) in env.", file=sys.stderr)
@@ -25,7 +26,6 @@ FINAL_FORMAT = """- **最关键刺激词**：[…]
 """
 
 def _extract_text(resp: Dict[str, Any]) -> str:
-    # 尽量兼容 OpenAI Responses 风格的多种返回
     if isinstance(resp, dict):
         if "output_text" in resp and isinstance(resp["output_text"], str):
             return resp["output_text"].strip()
@@ -41,34 +41,68 @@ def _extract_text(resp: Dict[str, Any]) -> str:
     return json.dumps(resp, ensure_ascii=False)
 
 def call_responses(system: str, user: str, temperature: float = 0.9, timeout: int = 180) -> str:
-    # 将 /responses 改为 /chat/completions
-    url = f"{BASE_URL}/chat/completions" 
+    url = f"{BASE_URL}/chat/completions"
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json",
     }
-    # 注意：如果改为 chat/completions，payload 结构通常也需要微调
     payload = {
         "model": MODEL,
-        "messages": [  # 标准格式通常是 messages 而不是 input
+        "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         "temperature": temperature,
     }
-    r = requests.post(url, headers=headers, json=payload, timeout=timeout)
-    r.raise_for_status()
-    return _extract_text(r.json())
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        r.raise_for_status()
+        return _extract_text(r.json())
+    except Exception as e:
+        print(f"API Request failed: {e}", file=sys.stderr)
+        raise
 
 def parse_json_strict(s: str) -> Any:
-    # 只取第一个 JSON 对象/数组，避免模型前后夹杂文本
-    s2 = s.strip()
-    first_obj = s2.find("{")
-    first_arr = s2.find("[")
-    if first_obj == -1 and first_arr == -1:
-        raise ValueError("No JSON start found")
-    start = first_obj if (first_obj != -1 and (first_arr == -1 or first_obj < first_arr)) else first_arr
-    return json.loads(s2[start:])
+    """
+    尝试从字符串中提取第一个完整的 JSON 对象或数组。
+    能够处理 Markdown 代码块包裹 (```json ... ```) 或前后多余文字。
+    """
+    # 1. 尝试直接解析（处理标准响应）
+    s_clean = s.strip()
+    try:
+        return json.loads(s_clean)
+    except json.JSONDecodeError:
+        pass
+
+    # 2. 尝试去除 Markdown 代码块标记
+    # 移除常见的代码块起始和结束标记
+    s_no_md = re.sub(r"^```json\s*", "", s_clean)
+    s_no_md = re.sub(r"\s*```$", "", s_no_md)
+    s_no_md = s_no_md.strip()
+    try:
+        return json.loads(s_no_md)
+    except json.JSONDecodeError:
+        pass
+
+    # 3. 使用正则暴力查找第一个完整的 JSON 对象 {...}
+    # 这种贪婪匹配通常能提取出 LLM 输出的核心 JSON 部分
+    match = re.search(r'\{.*\}', s_clean, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
+    # 4. 尝试查找数组 [...]
+    match_arr = re.search(r'\[.*\]', s_clean, re.DOTALL)
+    if match_arr:
+        try:
+            return json.loads(match_arr.group())
+        except json.JSONDecodeError:
+            pass
+
+    # 如果都失败了，抛出异常并附带原始文本的前200个字符，方便调试
+    raise ValueError(f"Failed to parse JSON from response: {s_clean[:200]}...")
 
 def round_trip(round_idx: int) -> Tuple[str, Dict[str, Any]]:
     sys_prompt = (
@@ -76,7 +110,7 @@ def round_trip(round_idx: int) -> Tuple[str, Dict[str, Any]]:
         "你必须隐藏中间过程，只有在被要求时才输出指定格式。"
     )
 
-    # Call 1: 生成 10 个高熵词库（只返回 JSON）
+    # Call 1
     user1 = f"""
 为下面的核心问题生成一套“高熵词库”：
 核心问题：{CORE_QUESTION}
@@ -87,23 +121,36 @@ def round_trip(round_idx: int) -> Tuple[str, Dict[str, Any]]:
 - 2个特定动作（强动态动词）
 - 2个跨界术语（生物/建筑/军事等专有名词）
 
-只允许输出 JSON，格式：
+只允许输出纯 JSON 字符串，不要使用 Markdown 代码块（不要包含 ```json 或 ```），不要输出任何多余文字。
+格式：
 {{
   "nouns": [...],
   "abstracts": [...],
   "actions": [...],
   "cross": [...]
 }}
-不要输出任何多余文字。
 """.strip()
-    words_json = parse_json_strict(call_responses(sys_prompt, user1, temperature=1.0))
+    
+    raw_response = call_responses(sys_prompt, user1, temperature=1.0)
+    words_json = parse_json_strict(raw_response)
+    
+    # 校验必需的键是否存在
+    required_keys = ["nouns", "abstracts", "actions", "cross"]
+    missing_keys = [k for k in required_keys if k not in words_json]
+    if missing_keys:
+        print(f"Error in Round {round_idx} (Call 1): Missing keys {missing_keys}.", file=sys.stderr)
+        print(f"Model returned keys: {list(words_json.keys())}", file=sys.stderr)
+        print(f"Raw content extracted: {json.dumps(words_json, ensure_ascii=False)}", file=sys.stderr)
+        # 抛出异常终止或重试，这里选择抛出异常以便 outer loop 捕获（如果有的话）
+        raise KeyError(f"Missing keys in JSON: {missing_keys}")
+
     nouns = words_json["nouns"]
     abstracts = words_json["abstracts"]
     actions = words_json["actions"]
     cross = words_json["cross"]
     words = nouns + abstracts + actions + cross
 
-    # Call 2: 用 10 个词分别生成 10 个候选（只返回 JSON，不要展示思考过程）
+    # Call 2
     user2 = f"""
 你将使用“随机词刺激法”为核心问题生成候选方案。
 核心问题：{CORE_QUESTION}
@@ -118,7 +165,8 @@ def round_trip(round_idx: int) -> Tuple[str, Dict[str, Any]]:
 - proposal
 - first_48h_experiment
 
-只允许输出 JSON，格式：
+只允许输出纯 JSON 字符串，不要使用 Markdown 代码块，不要输出任何多余文字。
+格式：
 {{
   "candidates": [
     {{
@@ -130,11 +178,10 @@ def round_trip(round_idx: int) -> Tuple[str, Dict[str, Any]]:
     }}
   ]
 }}
-不要输出任何多余文字。
 """.strip()
     cand_json = parse_json_strict(call_responses(sys_prompt, user2, temperature=0.95))
 
-    # Call 3: 评审 + 只输出 1 个最终方案（严格按你给的格式）
+    # Call 3
     user3 = f"""
 你将从候选中选出“一个最优方案”，并且必须满足：
 - 新颖性、贴合度、可落地、杀伤力 四项同时达标
@@ -149,7 +196,7 @@ def round_trip(round_idx: int) -> Tuple[str, Dict[str, Any]]:
 """.strip()
     final_text = call_responses(sys_prompt, user3, temperature=0.75).strip()
 
-    # Call 4: 让模型自评是否达标（只返回 JSON），用于决定是否需要再来一轮
+    # Call 4
     user4 = f"""
 请你对“最终输出方案”做严格自评，判断是否同时满足四项：
 新颖性、贴合度、可落地、杀伤力。
@@ -157,7 +204,8 @@ def round_trip(round_idx: int) -> Tuple[str, Dict[str, Any]]:
 最终输出方案如下：
 {final_text}
 
-只允许输出 JSON：
+只允许输出纯 JSON 字符串，不要使用 Markdown 代码块，不要输出任何多余文字。
+格式：
 {{
   "pass": true/false,
   "scores": {{
@@ -168,7 +216,6 @@ def round_trip(round_idx: int) -> Tuple[str, Dict[str, Any]]:
   }},
   "why": "一句话理由"
 }}
-不要输出任何多余文字。
 """.strip()
     eval_json = parse_json_strict(call_responses(sys_prompt, user4, temperature=0.2))
     return final_text, eval_json
@@ -182,28 +229,37 @@ def main():
     best_eval = None
 
     for i in range(1, max_rounds + 1):
-        final_text, eval_json = round_trip(i)
-        scores = eval_json.get("scores", {})
-        total = float(scores.get("novelty", 0)) + float(scores.get("fit", 0)) + float(scores.get("feasibility", 0)) + float(scores.get("impact", 0))
+        try:
+            final_text, eval_json = round_trip(i)
+            scores = eval_json.get("scores", {})
+            # 安全地获取分数，防止缺少某个分数项报错
+            total = float(scores.get("novelty", 0)) + float(scores.get("fit", 0)) + \
+                    float(scores.get("feasibility", 0)) + float(scores.get("impact", 0))
 
-        if total > best_score:
-            best = final_text
-            best_score = total
-            best_eval = eval_json
+            if total > best_score:
+                best = final_text
+                best_score = total
+                best_eval = eval_json
 
-        if bool(eval_json.get("pass")):
-            break
+            if bool(eval_json.get("pass")):
+                break
 
-        time.sleep(0.5)
+            time.sleep(0.5)
+        except (KeyError, ValueError, requests.RequestException) as e:
+            print(f"Round {i} failed: {e}", file=sys.stderr)
+            # 可以选择继续尝试下一轮或者直接退出
+            # continue 
+            # 为了稳定性，如果解析彻底失败，建议稍作等待后重试或退出
+            time.sleep(1)
+            continue
 
     if not best:
-        print("Failed to generate idea.", file=sys.stderr)
+        print("Failed to generate idea after retries.", file=sys.stderr)
         sys.exit(1)
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(best.strip() + "\n")
 
-    # 只输出最终方案到 stdout（方便 Actions 日志看到），不输出中间过程
     print(best.strip())
 
 if __name__ == "__main__":
