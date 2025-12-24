@@ -272,7 +272,7 @@ def run_codex_full_auto(prompt: str) -> str:
     """
     try:
         safe_prompt = shlex.quote(prompt)
-        cmd = f"codex --full-auto {safe_prompt} --dangerously-bypass-approvals-and-sandbox"
+        cmd = f"codex {safe_prompt} --dangerously-bypass-approvals-and-sandbox"
         out = run_cmd(cmd, capture=True)
         return out or ""
     except subprocess.CalledProcessError as e:
