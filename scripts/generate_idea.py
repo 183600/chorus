@@ -26,18 +26,68 @@ FINAL_FORMAT = """- **最关键刺激词**：[…]
 """
 
 def _extract_text(resp: Dict[str, Any]) -> str:
-    if isinstance(resp, dict):
-        if "output_text" in resp and isinstance(resp["output_text"], str):
-            return resp["output_text"].strip()
-        out = resp.get("output")
-        if isinstance(out, list):
-            chunks = []
-            for item in out:
-                for c in item.get("content", []) if isinstance(item, dict) else []:
-                    if isinstance(c, dict) and "text" in c:
-                        chunks.append(c["text"])
-            if chunks:
-                return "".join(chunks).strip()
+    """
+    从不同供应商/协议的返回体中抽取“助手输出文本”。
+    兼容：
+    - iflow: output_text / output[].content[].text
+    - OpenAI Chat Completions: choices[0].message.content
+    - 可能的增量格式：choices[0].delta.content
+    """
+    if not isinstance(resp, dict):
+        return json.dumps(resp, ensure_ascii=False)
+
+    # 1) iflow: output_text
+    if "output_text" in resp and isinstance(resp["output_text"], str):
+        return resp["output_text"].strip()
+
+    # 2) iflow: output chunks
+    out = resp.get("output")
+    if isinstance(out, list):
+        chunks: list[str] = []
+        for item in out:
+            if not isinstance(item, dict):
+                continue
+            content_list = item.get("content", [])
+            if not isinstance(content_list, list):
+                continue
+            for c in content_list:
+                if isinstance(c, dict) and isinstance(c.get("text"), str):
+                    chunks.append(c["text"])
+        if chunks:
+            return "".join(chunks).strip()
+
+    # 3) OpenAI chat.completions: choices[0].message.content
+    choices = resp.get("choices")
+    if isinstance(choices, list) and choices:
+        choice0 = choices[0] if isinstance(choices[0], dict) else None
+        if isinstance(choice0, dict):
+            msg = choice0.get("message")
+            if not isinstance(msg, dict):
+                # 一些实现用 delta
+                msg = choice0.get("delta")
+
+            if isinstance(msg, dict):
+                content = msg.get("content")
+
+                # content 是字符串（最常见）
+                if isinstance(content, str):
+                    return content.strip()
+
+                # content 是分段结构（少数实现）
+                if isinstance(content, list):
+                    parts: list[str] = []
+                    for p in content:
+                        if not isinstance(p, dict):
+                            continue
+                        # 常见两种字段
+                        if isinstance(p.get("text"), str):
+                            parts.append(p["text"])
+                        elif p.get("type") == "text" and isinstance(p.get("text"), str):
+                            parts.append(p["text"])
+                    if parts:
+                        return "".join(parts).strip()
+
+    # 4) fallback：返回原始 JSON 便于调试
     return json.dumps(resp, ensure_ascii=False)
 
 def call_responses(system: str, user: str, temperature: float = 0.9, timeout: int = 180) -> str:
