@@ -41,16 +41,18 @@ def _extract_text(resp: Dict[str, Any]) -> str:
     return json.dumps(resp, ensure_ascii=False)
 
 def call_responses(system: str, user: str, temperature: float = 0.9, timeout: int = 180) -> str:
-    url = f"{BASE_URL}/responses"
+    # 将 /responses 改为 /chat/completions
+    url = f"{BASE_URL}/chat/completions" 
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json",
     }
+    # 注意：如果改为 chat/completions，payload 结构通常也需要微调
     payload = {
         "model": MODEL,
-        "input": [
-            {"role": "system", "content": [{"type": "text", "text": system}]},
-            {"role": "user", "content": [{"type": "text", "text": user}]},
+        "messages": [  # 标准格式通常是 messages 而不是 input
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
         ],
         "temperature": temperature,
     }
