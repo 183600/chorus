@@ -19,7 +19,7 @@ jobs:
 
     env:
       IFLOW_BASE_URL: https://apis.iflow.cn/v1
-      IFLOW_MODEL: "glm-4.6"  # 建议加上引号
+      IFLOW_MODEL: "glm-4.6"
       IDEA_MAX_ROUNDS: "8"
 
     steps:
@@ -72,12 +72,11 @@ jobs:
           if command -v codex >/dev/null 2>&1; then
             codex --version || true
           else
-            # 尽量自动安装；如你有固定安装方式，替换这段
             if ! command -v npm >/dev/null 2>&1; then
               sudo apt-get update
               sudo apt-get install -y nodejs npm
             fi
-            npm install -g @openai/codex || npm install -g codex || true
+            npm install -g @openai/codex@0.3.3 || npm install -g codex@0.3.3 || true
             command -v codex
             codex --version || true
           fi
@@ -88,7 +87,7 @@ jobs:
         run: |
           mkdir -p ~/.codex
 
-          # 按你的要求创建 config.toml（使用 echo 避免缩进问题）
+          # 创建 config.toml
           {
             echo 'model = "glm-4.6"'
             echo 'model_provider = "iflow"'
@@ -100,16 +99,16 @@ jobs:
             echo 'wire_api = "responses"'
           } > ~/.codex/config.toml
 
-          # 按你的要求创建 auth.json（key 从 Secrets 注入，避免硬编码）
+          # 创建 auth.json
           echo "{\"OPENAI_API_KEY\":\"${IFLOW_API_KEY}\"}" > ~/.codex/auth.json
 
       - name: Sanity test Codex can run
         env:
           IFLOW_API_KEY: ${{ secrets.IFLOW_API_KEY }}
         run: |
-          # 同时把 key 放到环境变量里（不同版本 CLI 读取方式不一）
+          # 修复：使用 echo 通过管道传递命令，避免终端检测问题
           export OPENAI_API_KEY="$IFLOW_API_KEY"
-          codex "Create a file CODEX_SMOKE_TEST.md with content 'ok'." --dangerously-bypass-approvals-and-sandbox
+          echo "Create a file CODEX_SMOKE_TEST.md with content 'ok'." | codex --dangerously-bypass-approvals-and-sandbox
           test -f CODEX_SMOKE_TEST.md
 
       - name: Codex implement the idea
@@ -119,7 +118,7 @@ jobs:
           export OPENAI_API_KEY="$IFLOW_API_KEY"
           IDEA="$(cat "${RUNNER_TEMP}/idea.txt")"
 
-          # Write the full prompt to a file (使用 echo 避免缩进问题)
+          # 创建提示文件
           PROMPT_FILE="${RUNNER_TEMP}/prompt.txt"
           {
             echo "你将把下面这个\"提升 LLM 智力的全新 workflow 点子\"落地为一个可运行的最小原型仓库。"
@@ -134,8 +133,8 @@ jobs:
             echo " ${IDEA}"
           } > "$PROMPT_FILE"
 
-          # Feed the prompt to codex
-          codex --full-auto "$(cat "$PROMPT_FILE")" --dangerously-bypass-approvals-and-sandbox
+          # 修复：使用 cat 通过管道传递提示，避免终端检测问题
+          cat "$PROMPT_FILE" | codex --full-auto --dangerously-bypass-approvals-and-sandbox
 
           git add -A
           git commit -m "feat: implement idea via codex" || true
