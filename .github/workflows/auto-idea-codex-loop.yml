@@ -109,7 +109,7 @@ jobs:
         run: |
           # 同时把 key 放到环境变量里（不同版本 CLI 读取方式不一）
           export OPENAI_API_KEY="$IFLOW_API_KEY"
-          codex --full-auto "Create a file CODEX_SMOKE_TEST.md with content 'ok'." --dangerously-bypass-approvals-and-sandbox
+          codex "Create a file CODEX_SMOKE_TEST.md with content 'ok'." --dangerously-bypass-approvals-and-sandbox
           test -f CODEX_SMOKE_TEST.md
 
       - name: Codex implement the idea
