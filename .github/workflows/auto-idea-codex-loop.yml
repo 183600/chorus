@@ -104,12 +104,12 @@ jobs:
           query_params = {}
           TOML
 
-      - name: Sanity test Codex can run
-        env:
-          IFLOW_API_KEY: ${{ secrets.IFLOW_API_KEY }}
-        run: |
-          printf "%s\n" "Create a file CODEX_SMOKE_TEST.md with content 'ok'." | codex
-          test -f CODEX_SMOKE_TEST.md
+- name: Sanity test Codex can run
+  env:
+    IFLOW_API_KEY: ${{ secrets.IFLOW_API_KEY }}
+  run: |
+    codex "Create a file CODEX_SMOKE_TEST.md with content 'ok'."
+    test -f CODEX_SMOKE_TEST.md
 
       - name: Codex implement the idea
         env:
