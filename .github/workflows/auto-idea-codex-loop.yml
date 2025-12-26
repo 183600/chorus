@@ -58,7 +58,7 @@ jobs:
         run: |
           python scripts/generate_idea.py "${RUNNER_TEMP}/idea.txt"
 
-      # ========= 创建分支、用 codex 落地 =========
+      # ========= 创建分支、用 iflow 落地 =========
       - name: Create new branch
         run: |
           git config user.name "github-actions[bot]"
@@ -73,45 +73,27 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install Codex CLI (latest)
+      # ========= 新增步骤：安装 iFlow CLI =========
+      - name: Install iFlow CLI
         run: |
-          if command -v codex >/dev/null 2>&1; then
-            codex --version
-            exit 0
-          fi
+          npm i -g @iflow-ai/iflow-cli@latest
+          iflow --version
 
-          npm i -g @openai/codex@latest
-          codex --version
-
-      - name: Write Codex config (runtime only)
+      # ========= 新增步骤：验证 API Key =========
+      - name: Verify IFLOW_API_KEY is present
         run: |
-          mkdir -p ~/.codex
+          test -n "$IFLOW_API_KEY" || { echo "Missing IFLOW_API_KEY secret"; exit 1; }
 
-          cat > ~/.codex/config.toml <<'TOML'
-          model = "glm-4.6"
-          model_provider = "iflow"
-          preferred_auth_method = "apikey"
+      # ========= 修改步骤：Sanity test iFlow =========
+      - name: Sanity test iFlow can run
+        env:
+          IFLOW_API_KEY: ${{ secrets.IFLOW_API_KEY }}
+        run: |
+          iflow "Create a file IFLOW_SMOKE_TEST.md with content 'ok'. think:high" --yolo
+          test -f IFLOW_SMOKE_TEST.md
 
-          # 避免 CI 卡住：不弹审批；同时保留 sandbox 限制（更安全）
-          approval_policy = "never"
-          sandbox_mode = "workspace-write"
-
-          [model_providers.iflow]
-          name = "iflow"
-          base_url = "https://apis.iflow.cn/v1"
-          env_key = "IFLOW_API_KEY"
-          wire_api = "responses"
-          query_params = {}
-          TOML
-
-- name: Sanity test Codex can run
-  env:
-    IFLOW_API_KEY: ${{ secrets.IFLOW_API_KEY }}
-  run: |
-    codex "Create a file CODEX_SMOKE_TEST.md with content 'ok'."
-    test -f CODEX_SMOKE_TEST.md
-
-      - name: Codex implement the idea
+      # ========= 修改步骤：使用 iFlow 实现想法 =========
+      - name: iFlow implement the idea
         env:
           IFLOW_API_KEY: ${{ secrets.IFLOW_API_KEY }}
         run: |
@@ -131,11 +113,16 @@ jobs:
             echo "${IDEA}"
           } > "$PROMPT_FILE"
 
-          cat "$PROMPT_FILE" | codex
+          # 读取 prompt 内容并组合成完整的指令
+          PROMPT_CONTENT=$(cat "$PROMPT_FILE")
+          
+          # 使用 iflow 命令执行，格式：iflow '<prompt> think:high' --yolo
+          iflow "${PROMPT_CONTENT} think:high" --yolo
 
           git add -A
-          git commit -m "feat: implement idea via codex" || true
+          git commit -m "feat: implement idea via iflow" || true
 
+      # ========= 回到 main：记录 JSON、比较并裁剪 =========
       - name: Push idea branch
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
@@ -146,7 +133,6 @@ jobs:
           git remote set-url origin "https://x-access-token:${GH_PAT}@github.com/${GITHUB_REPOSITORY}.git"
           git push -u origin "$BRANCH"
 
-      # ========= 回到 main：记录 JSON、比较并裁剪 =========
       - name: Switch back to main and restore original files
         run: |
           git checkout main
