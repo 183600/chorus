@@ -6,7 +6,7 @@ from typing import Any, Dict
 import requests
 
 BASE_URL = os.getenv("IFLOW_BASE_URL", "https://apis.iflow.cn/v1").rstrip("/")
-MODEL = os.getenv("IFLOW_MODEL", "glm-4.6")
+MODEL = os.getenv("IFLOW_MODEL_NAME", "glm-4.6")
 API_KEY = os.getenv("IFLOW_API_KEY") or os.getenv("OPENAI_API_KEY")
 
 if not API_KEY:
