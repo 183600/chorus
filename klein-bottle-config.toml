@@ -1,0 +1,109 @@
+# 克莱因瓶反思循环工作流配置文件
+# Klein Bottle Reflection Cycle Workflow Configuration
+
+# 服务器配置（用于API调用）
+[server]
+host = "127.0.0.1"
+port = 11435
+
+# LLM模型配置
+# 注意：请将 your-api-key-here 替换为实际的API密钥
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "your-api-key-here"
+name = "glm-4.6"
+temperature = 0.8
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "your-api-key-here"
+name = "qwen3-max"
+temperature = 0.9
+
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "your-api-key-here"
+name = "deepseek-v3.2"
+temperature = 1.0
+
+# 克莱因瓶工作流专用配置
+[klein-bottle]
+# 默认使用的模型名称
+default_model = "glm-4.6"
+
+# 最大迭代次数
+max_iterations = 3
+
+# 收敛阈值 (0.0 - 1.0)
+# 当自评估分数超过此值时，工作流将提前收敛
+convergence_threshold = 0.8
+
+# 单次请求超时时间（秒）
+timeout_secs = 60
+
+# 反思提示模板
+# 支持以下变量：
+# - {previous_answer}: 前一次的回答
+reflection_prompt_template = "请从逻辑、事实和创造性三个角度批判上文，并撰写一个更完善的版本。保持回答的核心观点，但增强其深度、严谨性和创新性。"
+
+# 评估提示模板
+# 支持以下变量：
+# - {answer}: 待评估的回答
+evaluation_prompt_template = "请对以下回答进行评分（0-1分），评估其在逻辑性、事实准确性和创造性方面的综合质量。只需返回一个数字分数，如：0.85"
+
+# 示例问题配置
+[questions]
+# 深度哲学问题
+philosophy = [
+    "意识的本质是什么？",
+    "人工智能是否能够真正理解情感？",
+    "时间的本质是什么？它是否是客观存在的？",
+    "人类自由意志的存在性及其哲学意义",
+    "数学真理是发现还是发明的？"
+]
+
+# 科学探索问题
+science = [
+    "宇宙的起源和最终命运是什么？",
+    "生命是如何从无机物中产生的？",
+    "量子力学的实在性解释是什么？",
+    "暗物质和暗能量的本质是什么？",
+    "人类意识能否被完全上传到计算机？"
+]
+
+# 创意思维问题
+creativity = [
+    "如果颜色有声音，红色听起来会是什么样？",
+    "设计一个能够感知情绪的建筑",
+    "如何用数学描述爱情的本质？",
+    "创造一种新的哲学分支来研究数字时代的人类存在",
+    "如果记忆可以编辑，社会会发生什么变化？"
+]
+
+# 预设工作流配置
+[presets]
+# 快速模式：较少迭代，较低阈值
+quick = { max_iterations = 2, convergence_threshold = 0.7, temperature = 0.8 }
+
+# 深度模式：更多迭代，较高阈值
+deep = { max_iterations = 5, convergence_threshold = 0.85, temperature = 0.7 }
+
+# 创意模式：高温度，中等迭代
+creative = { max_iterations = 3, convergence_threshold = 0.75, temperature = 1.2 }
+
+# 平衡模式：默认配置
+balanced = { max_iterations = 3, convergence_threshold = 0.8, temperature = 0.9 }
+
+# 输出配置
+[output]
+# 是否保存详细的中间结果
+save_intermediate_results = true
+
+# 输出目录
+output_directory = "./klein-bottle-results"
+
+# 结果文件格式
+result_format = "json"  # 支持: json, toml, yaml
+
+# 是否在控制台显示详细过程
+verbose_output = true

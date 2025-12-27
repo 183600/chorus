@@ -1,0 +1,35 @@
+# 克莱因瓶反思循环演示配置
+# 此文件用于演示和CI测试，不包含真实API密钥
+
+[server]
+host = "127.0.0.1"
+port = 11435
+
+# 演示模型配置（需要替换为真实的API密钥）
+[[model]]
+api_base = "https://apis.iflow.cn/v1"
+api_key = "your-api-key-here"
+name = "glm-4.6"
+temperature = 0.8
+
+# 克莱因瓶工作流基础配置
+[klein-bottle]
+default_model = "glm-4.6"
+max_iterations = 3
+convergence_threshold = 0.8
+timeout_secs = 60
+reflection_prompt_template = "请从逻辑、事实和创造性三个角度批判上文，并撰写一个更完善的版本。"
+evaluation_prompt_template = "请对以下回答进行评分（0-1分），只需返回一个数字分数，如：0.85"
+
+# 简化的演示问题
+[questions]
+demo = [
+    "意识的本质是什么？",
+    "人工智能是否能够真正理解情感？"
+]
+
+[output]
+save_intermediate_results = true
+output_directory = "./demo-results"
+result_format = "json"
+verbose_output = true

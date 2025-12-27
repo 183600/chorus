@@ -1,0 +1,135 @@
+[0;34m2025-12-27 13:23:09 [CI-INFO][0m === 1. 环境检查 ===
+[0;34m2025-12-27 13:23:09 [CI-INFO][0m 执行测试步骤: 检查 Rust 工具链
+cargo 1.92.0 (344c4567c 2025-10-21)
+[0;32m2025-12-27 13:23:09 [CI-SUCCESS][0m 步骤完成: 检查 Rust 工具链
+[0;34m2025-12-27 13:23:09 [CI-INFO][0m 执行测试步骤: 检查项目结构
+[0;32m2025-12-27 13:23:09 [CI-SUCCESS][0m 步骤完成: 检查项目结构
+[0;34m2025-12-27 13:23:09 [CI-INFO][0m 执行测试步骤: 检查配置文件
+[0;32m2025-12-27 13:23:09 [CI-SUCCESS][0m 步骤完成: 检查配置文件
+[0;34m2025-12-27 13:23:09 [CI-INFO][0m === 2. 构建测试 ===
+[0;34m2025-12-27 13:23:09 [CI-INFO][0m 执行测试步骤: 依赖检查
+warning: value assigned to `current_answer` is never read
+  --> src/klein_bottle.rs:90:34
+   |
+90 |         let mut current_answer = question.to_string();
+   |                                  ^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: maybe it is overwritten before being read?
+   = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `raw_output` is never read
+  --> src/workflow.rs:36:5
+   |
+31 | struct SelectedChoice {
+   |        -------------- field in this struct
+...
+36 |     raw_output: String,
+   |     ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `label` is never read
+  --> src/workflow.rs:42:5
+   |
+40 | struct ParsedSelection {
+   |        --------------- field in this struct
+41 |     index: usize,
+42 |     label: Option<String>,
+   |     ^^^^^
+   |
+   = note: `ParsedSelection` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: `chorus` (lib) generated 3 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s
+[0;32m2025-12-27 13:23:09 [CI-SUCCESS][0m 步骤完成: 依赖检查
+[0;34m2025-12-27 13:23:09 [CI-INFO][0m 执行测试步骤: 项目构建
+warning: value assigned to `current_answer` is never read
+  --> src/klein_bottle.rs:90:34
+   |
+90 |         let mut current_answer = question.to_string();
+   |                                  ^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: maybe it is overwritten before being read?
+   = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `raw_output` is never read
+  --> src/workflow.rs:36:5
+   |
+31 | struct SelectedChoice {
+   |        -------------- field in this struct
+...
+36 |     raw_output: String,
+   |     ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `label` is never read
+  --> src/workflow.rs:42:5
+   |
+40 | struct ParsedSelection {
+   |        --------------- field in this struct
+41 |     index: usize,
+42 |     label: Option<String>,
+   |     ^^^^^
+   |
+   = note: `ParsedSelection` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: `chorus` (lib) generated 3 warnings
+    Finished `release` profile [optimized] target(s) in 0.10s
+[0;32m2025-12-27 13:23:09 [CI-SUCCESS][0m 步骤完成: 项目构建
+[0;34m2025-12-27 13:23:09 [CI-INFO][0m 执行测试步骤: 二进制文件检查
+[0;32m2025-12-27 13:23:09 [CI-SUCCESS][0m 步骤完成: 二进制文件检查
+[0;34m2025-12-27 13:23:09 [CI-INFO][0m === 3. 功能测试 ===
+[0;34m2025-12-27 13:23:09 [CI-INFO][0m 执行测试步骤: 帮助信息测试
+克莱因瓶反思循环工作流 - 实现LLM的深度递归思考
+
+Usage: klein_bottle [OPTIONS]
+
+Options:
+  -q, --question <QUESTION>    要反思的问题
+  -i, --iterations <COUNT>     最大迭代次数 (默认: 3) [default: 3]
+  -t, --threshold <THRESHOLD>  收敛阈值 0-1 (默认: 0.8) [default: 0.8]
+  -m, --model <MODEL>          使用的模型名称 (默认: glm-4.6) [default: glm-4.6]
+  -d, --demo                   使用演示问题
+  -o, --output <FILE>          输出结果到JSON文件
+  -c, --config <FILE>          配置文件路径 (默认: config.toml) [default: config.toml]
+  -h, --help                   Print help
+  -V, --version                Print version
+[0;32m2025-12-27 13:23:09 [CI-SUCCESS][0m 步骤完成: 帮助信息测试
+[0;34m2025-12-27 13:23:09 [CI-INFO][0m 执行测试步骤: 版本信息测试
+klein_bottle 1.0.0
+[0;32m2025-12-27 13:23:09 [CI-SUCCESS][0m 步骤完成: 版本信息测试
+[0;34m2025-12-27 13:23:09 [CI-INFO][0m 执行测试步骤: 配置解析测试
+克莱因瓶反思循环工作流 - 实现LLM的深度递归思考
+
+Usage: klein_bottle [OPTIONS]
+
+Options:
+  -q, --question <QUESTION>    要反思的问题
+  -i, --iterations <COUNT>     最大迭代次数 (默认: 3) [default: 3]
+  -t, --threshold <THRESHOLD>  收敛阈值 0-1 (默认: 0.8) [default: 0.8]
+  -m, --model <MODEL>          使用的模型名称 (默认: glm-4.6) [default: glm-4.6]
+  -d, --demo                   使用演示问题
+  -o, --output <FILE>          输出结果到JSON文件
+  -c, --config <FILE>          配置文件路径 (默认: config.toml) [default: config.toml]
+  -h, --help                   Print help
+  -V, --version                Print version
+[0;32m2025-12-27 13:23:09 [CI-SUCCESS][0m 步骤完成: 配置解析测试
+[0;34m2025-12-27 13:23:09 [CI-INFO][0m === 4. 参数验证测试 ===
+[0;34m2025-12-27 13:23:09 [CI-INFO][0m 执行测试步骤: 无效参数处理
+error: unexpected argument '--invalid-option' found
+
+Usage: klein_bottle [OPTIONS]
+
+For more information, try '--help'.
+[0;32m2025-12-27 13:23:09 [CI-SUCCESS][0m 步骤完成: 无效参数处理
+[0;34m2025-12-27 13:23:09 [CI-INFO][0m 执行测试步骤: 无效配置处理
+=== 克莱因瓶反思循环启动 ===
+问题: test
+最大迭代次数: 3
+收敛阈值: 0.8
+使用模型: glm-4.6
+
+[0;32m2025-12-27 13:23:10 [CI-SUCCESS][0m 步骤完成: 无效配置处理
+[0;34m2025-12-27 13:23:10 [CI-INFO][0m === 5. 配置文件测试 ===
+[1;33m2025-12-27 13:23:10 [CI-WARNING][0m Python3 或 toml 模块不可用，跳过配置语法检查

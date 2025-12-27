@@ -3,6 +3,18 @@ name = "chorus"
 version = "1.2.0"
 edition = "2021"
 
+[lib]
+name = "chorus"
+path = "src/lib.rs"
+
+[[bin]]
+name = "chorus"
+path = "src/bin/chorus.rs"
+
+[[bin]]
+name = "klein_bottle"
+path = "src/bin/klein_bottle.rs"
+
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }
 tokio-stream = "0.1"
@@ -22,6 +34,7 @@ async-recursion = "1.0"
 bytes = "1.5"
 chrono = "0.4"
 url = "2.4"
+clap = { version = "4.0", features = ["derive"] }
 
 [profile.release]
 opt-level = 3
