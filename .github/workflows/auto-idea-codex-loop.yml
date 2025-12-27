@@ -21,6 +21,7 @@ jobs:
       IFLOW_BASE_URL: https://apis.iflow.cn/v1
       IFLOW_MODEL: "glm-4.6"
       IDEA_MAX_ROUNDS: "8"
+      IFLOW_API_KEY: ${{ secrets.IFLOW_API_KEY }}
 
     steps:
       - name: Checkout
